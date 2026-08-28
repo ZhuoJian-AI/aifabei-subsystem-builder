@@ -334,8 +334,10 @@ footer{margin-top:60px;padding-top:20px;border-top:1px solid var(--line);font-si
 <h2>下面是细节，开工时再看</h2>
 
 <details>
-<summary>谁参与 · 谁能做什么<span class="sc">{{几}}个部门</span></summary>
+<summary>谁参与 · 谁能做什么<span class="sc">{{几}}个部门 · {{几}}种角色</span></summary>
 <div class="dc">
+
+<h3>部门</h3>
 <table>
 <tr><th style="width:24%">谁</th><th>负责什么</th></tr>
 <tr><td><strong>{{部门}}</strong>（牵头）</td><td>{{做什么}}</td></tr>
@@ -343,6 +345,41 @@ footer{margin-top:60px;padding-top:20px;border-top:1px solid var(--line);font-si
 <tr><td><strong>承接方</strong></td><td>做出来、放上去、能用。<strong>怎么做、放哪、用什么由他定</strong></td></tr>
 <tr><td><strong>{{公司}}</strong></td><td>问需求、写这份、做完逐条验收</td></tr>
 </table>
+
+<h3>角色 · 谁能做什么、不能做什么</h3>
+<p class="tip">部门是粗的，<strong>真正决定谁看得到什么的是角色</strong>。这张表按角色列，
+每一行都要有「不能做什么」——<strong>那一列空着，说明这一轮没问到位</strong>。</p>
+<table>
+<tr>
+  <th style="width:12%">部门</th>
+  <th style="width:14%">角色</th>
+  <th style="width:10%">谁（举例）</th>
+  <th style="width:19%">总部账号</th>
+  <th>能做什么</th>
+  <th style="width:20%">不能做什么</th>
+</tr>
+<tr><td>{{部门}}</td><td><strong>{{角色}}</strong></td><td>{{人名}}</td>
+    <td><code>{{总部账号}}</code></td><td>{{能做什么}}</td>
+    <td><strong>{{不能做什么}}</strong></td></tr>
+<tr><td>{{部门}}</td><td><strong>{{角色}}</strong></td><td>{{人名}}</td>
+    <td><code>{{总部账号}}</code></td><td>{{能做什么}}</td>
+    <td><strong>{{不能做什么}}</strong></td></tr>
+<!-- 只有一个部门、只有一种人，也要写成一行表格，不要写成一句话 -->
+</table>
+
+<h3>有哪些东西是分人看的</h3>
+<p class="tip">成本 · 利润 · 客户联系方式 · 别人的业绩 —— 这类数一旦谁都能导出去，就是事故。
+<strong>没有就明写「没有」，不要留空。</strong></p>
+<table>
+<tr><th style="width:26%">这个数</th><th style="width:30%">谁能看</th><th>谁看不到 · 为什么</th></tr>
+<tr><td>{{哪个数}}</td><td>{{谁能看}}</td><td><strong>{{谁看不到}}</strong> —— {{为什么}}</td></tr>
+</table>
+
+<h3>怎么认人</h3>
+<p class="tip"><strong>这个模块不自己做登录</strong>，认的是总部主 AI 那边的用户。
+上面那张表里的「总部账号」就是对上去的依据。<br>
+账号还没对上的，写成〔待定：总部账号待确认〕—— <strong>但角色和人名必须现在就落实</strong>。
+账号是后面对的，角色是现在定的；<strong>登录换一次实现，角色表不用动。</strong></p>
 
 <h3>AI 能替他们做什么</h3>
 <ul>
