@@ -1,0 +1,467 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{模块名}} · 开工计划书</title>
+<!--
+　用法
+　─────────────────────────────────────────────
+　1. 整份复制，把所有 {{占位符}} 换掉。结构别动。
+　2. 用不上的整节删掉，不要留空节。
+　3. 两张图（架构图 · 页面线框）必须画 —— 怎么画见 references/05_画出来.md
+　4. 折叠区（details）里的内容开工时才读，不用精简
+　5. 全文不许出现技术词：接口/数据库/字段/部署/前端/后端/框架/事件
+　　　例外：文件名、系统名、路径这些专有名词照写
+-->
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--ink:#12161b;--ink2:#4a525c;--ink3:#8a929c;--line:#e6e9ed;--panel:#f7f8fa;
+  --red:#c0392b;--red-bg:#fdf1ef;--ok:#1a7a4c;--ok-bg:#e9f6ef;--warn:#b8860b;--warn-bg:#fdf8ea;
+  --acc:#2f6fd0;--acc-bg:#eef4fc}
+body{font-family:"MiSans","PingFang SC","Microsoft YaHei",-apple-system,"Segoe UI",sans-serif;
+  color:var(--ink);background:#fff;line-height:1.8;font-size:15px;padding:0 0 80px;-webkit-font-smoothing:antialiased}
+.wrap{max-width:880px;margin:0 auto;padding:0 30px}
+header{padding:52px 0 20px;border-bottom:2px solid var(--ink)}
+.kicker{font-size:12px;letter-spacing:.2em;color:var(--ink3);margin-bottom:12px}
+h1{font-size:30px;font-weight:700;letter-spacing:-.02em;line-height:1.25}
+.meta{margin-top:10px;color:var(--ink3);font-size:13.5px}
+
+.verdict{background:var(--ink);color:#fff;padding:24px 28px;margin:26px 0 34px;border-radius:2px}
+.verdict .vb{font-size:19px;font-weight:600;line-height:1.55}
+.verdict .vs{margin-top:12px;font-size:14px;color:#b9c2cc}
+.verdict .vs b{color:#fff}
+
+h2{font-size:12.5px;letter-spacing:.14em;color:var(--ink3);font-weight:700;
+  margin:48px 0 14px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+p{margin:12px 0;color:var(--ink2)}
+strong{color:var(--ink);font-weight:600}
+
+.dia{border:1px solid var(--line);border-radius:2px;padding:22px 20px 16px;margin:14px 0;background:#fdfdfe}
+.dia svg{width:100%;height:auto;display:block}
+.dia .cap{margin-top:14px;padding-top:13px;border-top:1px solid var(--line);
+  font-size:13px;color:var(--ink3);line-height:1.75}
+.dia .cap b{color:var(--ink2)}
+
+table{width:100%;border-collapse:collapse;margin:14px 0;font-size:14px}
+th{text-align:left;font-size:11px;letter-spacing:.1em;color:var(--ink3);font-weight:700;
+  padding:8px 10px;border-bottom:1.5px solid var(--ink)}
+td{padding:10px;border-bottom:1px solid var(--line);color:var(--ink2);vertical-align:top}
+td strong{color:var(--ink)}
+tr:last-child td{border-bottom:none}
+
+.card{padding:18px 22px;margin:14px 0;border-radius:2px;border:1px solid var(--line)}
+.card.acc{border-left:4px solid var(--acc);background:var(--acc-bg)}
+.card.ok{border-left:4px solid var(--ok);background:var(--ok-bg)}
+.card.warn{border-left:4px solid var(--warn);background:var(--warn-bg)}
+.card.red{border-left:4px solid var(--red);background:var(--red-bg)}
+.card h4{font-size:15.5px;font-weight:600;margin:0 0 6px}
+.card p{font-size:14px;margin:7px 0}
+.card p:last-child{margin-bottom:0}
+
+.ui-wrap{background:var(--panel);border:1px solid var(--line);border-radius:3px;padding:12px}
+.ui-wrap svg{width:100%;height:auto;display:block}
+.sc2{display:grid;grid-template-columns:1fr 1fr;gap:20px;margin:14px 0;align-items:start}
+.sc2 .t{font-size:15.5px;font-weight:600;margin-bottom:9px}
+.sc2 ul{margin:0}
+@media(max-width:760px){.sc2{grid-template-columns:1fr;gap:12px}}
+
+details{border:1px solid var(--line);border-radius:2px;margin:12px 0;background:#fff}
+summary{padding:13px 18px;cursor:pointer;font-size:15px;font-weight:600;list-style:none;
+  display:flex;align-items:center;gap:9px;background:var(--panel)}
+summary::-webkit-details-marker{display:none}
+summary:before{content:"▸";color:var(--ink3);font-size:12px;transition:transform .15s}
+details[open] summary:before{transform:rotate(90deg)}
+summary .sc{margin-left:auto;font-size:12.5px;font-weight:400;color:var(--ink3)}
+details>.dc{padding:4px 18px 18px}
+details>.dc>h3{font-size:15.5px;font-weight:600;margin:20px 0 8px}
+
+ul{list-style:none;margin:10px 0}
+li{position:relative;padding-left:19px;margin:5px 0;color:var(--ink2);font-size:14px;line-height:1.72}
+li:before{content:"";position:absolute;left:5px;top:10px;width:4px;height:4px;background:var(--ink3);border-radius:50%}
+ul.chk li:before{content:"☐";background:none;width:auto;height:auto;left:0;top:0;color:var(--ink3);font-size:13px}
+code{font-family:Consolas,monospace;font-size:12.5px;background:var(--panel);padding:1px 5px;
+  border:1px solid var(--line);border-radius:2px;color:var(--ink)}
+.tag{display:inline-block;font-size:10.5px;font-weight:700;padding:1px 6px;border-radius:2px;
+  white-space:nowrap;margin-left:5px;vertical-align:1px}
+.tag-def{background:var(--warn-bg);color:var(--warn);border:1px solid #ecdfb4}
+.tag-tbd{background:var(--panel);color:var(--ink3);border:1px solid var(--line)}
+.tag-blk{background:var(--red-bg);color:var(--red);border:1px solid #f0c9c2}
+footer{margin-top:60px;padding-top:20px;border-top:1px solid var(--line);font-size:12.5px;color:var(--ink3);line-height:1.85}
+@media print{body{font-size:11.5px}.card,.dia,details{break-inside:avoid}header{padding-top:0}
+  .verdict{background:#f4f5f7;color:#111}.verdict .vs{color:#444}.verdict .vs b{color:#111}
+  details{border:none}details>.dc{padding:0}summary{background:none;padding-left:0}
+  details:not([open])>.dc{display:block}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <div class="kicker">{{公司}} · 开工计划书</div>
+  <h1>{{模块名}}</h1>
+  <div class="meta">{{日期}} · 访谈：{{提出人职务}} · 使用者：{{使用者}}（{{到场情况}}）</div>
+</header>
+
+<!-- 结论 · 一句话说清能不能开工。开不了工就写差什么，不要含糊 -->
+<div class="verdict">
+  <div class="vb">{{该做 / 不该做}}。{{现在能不能开工}}</div>
+  <div class="vs">{{差的那几样，用 ① ② 列，一行写完}}</div>
+</div>
+
+
+<h2>这东西是什么</h2>
+
+<!--
+　架构图 · 必画
+　─────────────────────────────────────────
+　骨架：上排=数据从哪来(1-3个)　中间=模块主体(黑框)　下排=页面/入口(2-4个)+AI旁路　底部=产出去哪
+　颜色规矩（不要自己发挥）：
+　　红框 #c0392b  = 现在缺的、阻塞的东西
+　　黑底 #12161b  = 模块本体
+　　蓝框 #2f6fd0  = 使用者用的页面
+　　灰框 #8a929c  = 别人维护 / 不常用的
+　　黄虚线 #b8860b = AI 那条旁路（永远画成虚线，表示它不走页面）
+　　绿线 #1a7a4c  = 产出流向公司外面
+　下排框最多 4 个。超过 4 个说明这个模块该拆了 —— 回去问槽 4。
+　详细规则见 references/05_画出来.md
+-->
+<div class="dia">
+<svg viewBox="0 0 840 400" xmlns="http://www.w3.org/2000/svg" font-family="MiSans, PingFang SC, Microsoft YaHei, sans-serif">
+  <defs>
+    <marker id="ar" markerWidth="9" markerHeight="9" refX="8" refY="3.2" orient="auto">
+      <path d="M0,0 L8,3.2 L0,6.4 z" fill="#8a929c"/>
+    </marker>
+    <marker id="arr" markerWidth="9" markerHeight="9" refX="8" refY="3.2" orient="auto">
+      <path d="M0,0 L8,3.2 L0,6.4 z" fill="#c0392b"/>
+    </marker>
+  </defs>
+
+  <!-- 上排 · 数据来源。缺的用红框 -->
+  <rect x="20" y="20" width="188" height="58" rx="2" fill="#fdf1ef" stroke="#c0392b" stroke-width="1.5"/>
+  <text x="114" y="43" text-anchor="middle" font-size="14.5" font-weight="600" fill="#12161b">{{数据源1}}</text>
+  <text x="114" y="63" text-anchor="middle" font-size="12" fill="#c0392b">{{状态，比如 还没拿到}}</text>
+
+  <rect x="632" y="20" width="188" height="58" rx="2" fill="#f7f8fa" stroke="#8a929c" stroke-width="1.2"/>
+  <text x="726" y="43" text-anchor="middle" font-size="14.5" font-weight="600" fill="#12161b">{{数据源2}}</text>
+  <text x="726" y="63" text-anchor="middle" font-size="12" fill="#4a525c">{{谁在什么时候放进来}}</text>
+
+  <!-- 中间 · 模块本体 -->
+  <rect x="250" y="140" width="340" height="72" rx="2" fill="#12161b"/>
+  <text x="420" y="172" text-anchor="middle" font-size="18" font-weight="600" fill="#fff">{{模块名}}</text>
+  <text x="420" y="194" text-anchor="middle" font-size="12" fill="#9aa6b3">{{规模，比如 一两百款}}</text>
+
+  <path d="M114,78 L114,120 L300,120 L300,134" fill="none" stroke="#c0392b" stroke-width="1.5"
+    stroke-dasharray="5 4" marker-end="url(#arr)"/>
+  <text x="150" y="112" font-size="11.5" fill="#c0392b">{{第一次导入}}</text>
+  <path d="M726,78 L726,120 L540,120 L540,134" fill="none" stroke="#8a929c" stroke-width="1.5" marker-end="url(#ar)"/>
+  <text x="608" y="112" font-size="11.5" fill="#4a525c">{{之后陆续加}}</text>
+
+  <!-- 下排 · 页面。用不到的整块删掉，剩下的重新分配 x -->
+  <rect x="20" y="286" width="188" height="76" rx="2" fill="#eef4fc" stroke="#2f6fd0" stroke-width="1.5"/>
+  <text x="114" y="310" text-anchor="middle" font-size="14.5" font-weight="600" fill="#12161b">{{页面1}}</text>
+  <text x="114" y="330" text-anchor="middle" font-size="11.5" fill="#4a525c">{{一句话}}</text>
+  <text x="114" y="349" text-anchor="middle" font-size="11.5" fill="#2f6fd0">{{谁用}}</text>
+
+  <rect x="230" y="286" width="188" height="76" rx="2" fill="#eef4fc" stroke="#2f6fd0" stroke-width="1.5"/>
+  <text x="324" y="310" text-anchor="middle" font-size="14.5" font-weight="600" fill="#12161b">{{页面2}}</text>
+  <text x="324" y="330" text-anchor="middle" font-size="11.5" fill="#4a525c">{{一句话}}</text>
+  <text x="324" y="349" text-anchor="middle" font-size="11.5" fill="#2f6fd0">{{谁用}}</text>
+
+  <rect x="440" y="286" width="188" height="76" rx="2" fill="#f7f8fa" stroke="#8a929c" stroke-width="1.5"/>
+  <text x="534" y="310" text-anchor="middle" font-size="14.5" font-weight="600" fill="#12161b">{{页面3}}</text>
+  <text x="534" y="330" text-anchor="middle" font-size="11.5" fill="#4a525c">{{一句话}}</text>
+  <text x="534" y="349" text-anchor="middle" font-size="11.5" fill="#8a929c">{{谁用，权限窄就用灰}}</text>
+
+  <rect x="650" y="286" width="170" height="76" rx="2" fill="#fdf8ea" stroke="#b8860b" stroke-width="1.5"
+    stroke-dasharray="5 3"/>
+  <text x="735" y="310" text-anchor="middle" font-size="14.5" font-weight="600" fill="#12161b">问 AI</text>
+  <text x="735" y="330" text-anchor="middle" font-size="11.5" fill="#4a525c">不开页面直接问</text>
+  <text x="735" y="349" text-anchor="middle" font-size="11.5" fill="#b8860b">{{能做什么，不能做什么}}</text>
+
+  <path d="M300,212 L300,250 L114,250 L114,282" fill="none" stroke="#8a929c" stroke-width="1.3" marker-end="url(#ar)"/>
+  <path d="M360,212 L360,250 L324,250 L324,282" fill="none" stroke="#8a929c" stroke-width="1.3" marker-end="url(#ar)"/>
+  <path d="M480,212 L480,250 L534,250 L534,282" fill="none" stroke="#8a929c" stroke-width="1.3" marker-end="url(#ar)"/>
+  <path d="M540,212 L540,250 L735,250 L735,282" fill="none" stroke="#b8860b" stroke-width="1.3"
+    stroke-dasharray="5 3" marker-end="url(#ar)"/>
+
+  <!-- 页面之间的跳转（有就画，没有删掉） -->
+  <path d="M208,320 L226,320" fill="none" stroke="#2f6fd0" stroke-width="1.5" marker-end="url(#ar)"/>
+
+  <!-- 产出流向外部（没有就整段删掉） -->
+  <path d="M324,366 L324,392 L640,392" fill="none" stroke="#1a7a4c" stroke-width="1.5" marker-end="url(#ar)"/>
+  <text x="470" y="382" text-anchor="middle" font-size="12" font-weight="600" fill="#1a7a4c">{{产出去哪}}</text>
+</svg>
+<div class="cap">
+<b>红色</b>{{红色在这张图里代表什么}}<br>
+<b>黄色虚线</b>{{AI 那条路的边界}}
+</div>
+</div>
+
+<div class="card acc">
+<p style="margin:0"><strong>一句话：</strong>给<strong>{{谁}}</strong>在<strong>{{什么时候}}</strong>用，
+用完他<strong>{{做什么决定}}</strong>。</p>
+<p style="margin-bottom:0;font-size:13px;color:var(--ink3)">
+现在是：{{现状的动作链，末尾带上那个基线数字}}。</p>
+</div>
+
+
+<h2>{{几}}个页面长什么样</h2>
+
+<!--
+　页面线框 · 必画，一个页面一组
+　─────────────────────────────────────────
+　🔴 不要用 ┌─┐ 字符画。中文全角、框线半角，浏览器里必然错位。
+　每组：左边一张 SVG 线框，右边 3-4 条「这么排 + 为什么」
+　右边每条的「为什么」必须指得回访谈里某一句业务事实。指不回去的删掉。
+　常见页面的 SVG 骨架见 references/05_画出来.md
+-->
+
+<div class="sc2">
+<div class="ui-wrap">
+<svg class="ui" viewBox="0 0 420 268" xmlns="http://www.w3.org/2000/svg" font-family="MiSans, PingFang SC, Microsoft YaHei, sans-serif">
+  <rect x="8" y="8" width="404" height="252" rx="3" fill="#fff" stroke="#d5dae1" stroke-width="1.2"/>
+  <!-- 这里画页面 1。骨架按形态选，见 05_画出来.md -->
+  <text x="210" y="140" text-anchor="middle" font-size="13" fill="#8a929c">{{页面1的线框}}</text>
+</svg>
+</div>
+<div>
+<div class="t">① {{页面1名字}}</div>
+<ul>
+<li><strong>{{这么排}}</strong> —— {{为什么，指回访谈的某一句}}</li>
+<li>🔴 <strong>{{最容易做错的那条}}</strong> —— {{为什么}}</li>
+<li>{{第三条}} —— {{为什么}}</li>
+<li>{{第四条}} —— {{为什么}}</li>
+</ul>
+</div>
+</div>
+
+<div class="sc2">
+<div class="ui-wrap">
+<svg class="ui" viewBox="0 0 420 300" xmlns="http://www.w3.org/2000/svg" font-family="MiSans, PingFang SC, Microsoft YaHei, sans-serif">
+  <rect x="8" y="8" width="404" height="284" rx="3" fill="#fff" stroke="#d5dae1" stroke-width="1.2"/>
+  <text x="210" y="150" text-anchor="middle" font-size="13" fill="#8a929c">{{页面2的线框}}</text>
+</svg>
+</div>
+<div>
+<div class="t">② {{页面2名字}} <span style="font-size:12px;font-weight:400;color:var(--red)">{{如果这是最重要的一屏，标出来}}</span></div>
+<ul>
+<li><strong>{{这么排}}</strong> —— {{为什么}}</li>
+<li>🔴 <strong>{{最容易做错的那条}}</strong> —— {{为什么}}</li>
+<li>{{第三条}} —— {{为什么}}</li>
+</ul>
+</div>
+</div>
+
+<!-- 有几个页面就复制几组。超过 4 组说明这个模块该拆了 -->
+
+<div class="card red">
+<p style="margin:0"><strong>整份文件里唯一不许改的一条</strong>：{{那条直接连着"什么算做成了"的硬要求}}<br>
+<span style="font-size:13.5px">其他排法承接方有更好的可以改。这条改了验收过不了。</span></p>
+</div>
+
+
+<h2>会在哪崩</h2>
+
+<!--
+　按「可能性」排，不是按严重程度。
+　每条风险都要指得回访谈里的某个缺口 —— 缺席的人、没拿到的材料、漏问的题。
+　指不回去的风险是编的，删掉。
+　最多 4 条。
+-->
+<table>
+<tr><th style="width:8%">可能性</th><th style="width:36%">崩在哪</th><th>怎么防</th></tr>
+<tr><td><strong style="color:#c0392b">高</strong></td>
+  <td><strong>{{崩在哪}}</strong><br><span style="font-size:13px;color:var(--ink3)">{{证据，来自访谈}}</span></td>
+  <td>{{怎么防，最好指向某个步骤}}</td></tr>
+<tr><td><strong style="color:#c0392b">高</strong></td>
+  <td><strong>{{崩在哪}}</strong><br><span style="font-size:13px;color:var(--ink3)">{{证据}}</span></td>
+  <td>{{怎么防}}</td></tr>
+<tr><td><strong style="color:#b8860b">中</strong></td>
+  <td><strong>{{崩在哪}}</strong><br><span style="font-size:13px;color:var(--ink3)">{{证据}}</span></td>
+  <td>{{怎么防}}</td></tr>
+</table>
+
+
+<h2>怎么走</h2>
+
+<!-- 阻塞的步骤编号用红色。S0/S1 一般就是那两条阻塞级待定 -->
+<table>
+<tr><th style="width:7%"></th><th style="width:30%">做什么</th><th style="width:20%">谁</th><th>算完成</th></tr>
+<tr><td><strong style="color:#c0392b">S0</strong></td>
+  <td><strong>{{拿到那个阻塞的东西}}</strong><br><span style="font-size:13px;color:var(--ink3)">{{顺带要补的}}</span></td>
+  <td>{{谁}}</td><td>{{算完成的标志，要能判断}}</td></tr>
+<tr><td><strong style="color:#c0392b">S1</strong></td>
+  <td><strong>{{第二条阻塞}}</strong></td><td>{{谁}}</td><td>{{算完成}}</td></tr>
+<tr><td>S2</td><td>{{第一版做什么}}</td><td>承接方</td><td>{{算完成}}</td></tr>
+<tr><td>S3</td><td>{{加什么}}</td><td>承接方</td><td>{{算完成}}</td></tr>
+<tr><td>S4</td><td>{{加什么}}</td><td>承接方</td><td>{{算完成}}</td></tr>
+<tr><td>S5</td><td>让 AI 也能{{做什么}}</td><td>承接方</td><td>{{算完成}}</td></tr>
+<tr><td>S6</td><td>试用{{多久}}，验收</td><td>{{谁}}</td><td>验收清单逐条勾完</td></tr>
+</table>
+
+<p style="font-size:13.5px;color:var(--ink3)">
+🔴 <strong>S0 和 S1 完成之前，S2 之后一步都别开始。</strong></p>
+
+
+<h2>什么算做成了</h2>
+
+<div class="card ok">
+<p style="font-size:16.5px;margin:0"><strong>「{{槽 6 的原话，一字不改}}」</strong></p>
+<p style="margin-bottom:0;font-size:13px;color:var(--ink3)">
+他的原话，一字未改。基线：现在是<strong>{{槽 2 那个数}}</strong>。做成了就是<strong>{{做成后的数}}</strong>。</p>
+</div>
+
+
+<h2>三条建议</h2>
+
+<ul>
+<li><strong>{{建议1}}</strong> —— {{为什么}}</li>
+<li><strong>{{建议2}}</strong> —— {{为什么}}</li>
+<li><strong>验收只认上面那一句</strong> —— 其他全做到、这条没做到，就是失败的</li>
+</ul>
+
+
+<h2>还没定的</h2>
+
+<table>
+<tr><th style="width:10%">级别</th><th style="width:36%">是什么</th><th>谁能定</th></tr>
+<tr><td><span class="tag tag-blk" style="margin:0">阻塞</span></td><td><strong>{{拿不到就开不了工的}}</strong></td><td>{{谁}}</td></tr>
+<tr><td><span class="tag tag-tbd" style="margin:0">待定</span></td><td>{{可后补的}}</td><td>{{谁}}</td></tr>
+</table>
+
+
+<h2>下面是细节，开工时再看</h2>
+
+<details>
+<summary>谁参与 · 谁能做什么<span class="sc">{{几}}个部门</span></summary>
+<div class="dc">
+<table>
+<tr><th style="width:24%">谁</th><th>负责什么</th></tr>
+<tr><td><strong>{{部门}}</strong>（牵头）</td><td>{{做什么}}</td></tr>
+<tr><td><strong>{{部门}}</strong></td><td>{{做什么}}</td></tr>
+<tr><td><strong>承接方</strong></td><td>做出来、放上去、能用。<strong>怎么做、放哪、用什么由他定</strong></td></tr>
+<tr><td><strong>{{公司}}</strong></td><td>问需求、写这份、做完逐条验收</td></tr>
+</table>
+
+<h3>AI 能替他们做什么</h3>
+<ul>
+<li>✅ {{能做的}} —— 可以直接问，不用打开页面</li>
+<li>⛔ {{不能做的}} —— 必须自己上去点</li>
+</ul>
+<p style="font-size:13px;color:var(--ink3)">页面按钮和 AI 做同一个动作，
+<strong>走的必须是同一套规则和权限</strong>，不能页面一套 AI 一套。</p>
+
+<h3>哪些要问一句「确定吗」</h3>
+<ul>
+<li>{{他明确说的那个}}</li>
+<li>删除 · 一次改多条 · 提交后撤不回来 <span class="tag tag-def">默认规矩</span></li>
+</ul>
+</div>
+</details>
+
+<details>
+<summary>数据从哪来<span class="sc">{{几}}处{{有没有不能用的}}</span></summary>
+<div class="dc">
+<table>
+<tr><th style="width:32%">哪一份</th><th>在哪 · 谁管 · 多久更新</th></tr>
+<tr><td><strong>{{正式的那份}}</strong></td><td>{{在哪、谁管、多久更新}}{{拿到没有}}</td></tr>
+<tr><td>{{野生的那份}}</td><td>{{来历不明的说清楚}}。<strong>能不能当依据</strong></td></tr>
+<tr><td>做出来之后</td><td>{{谁往里放新的}}</td></tr>
+</table>
+</div>
+</details>
+
+<details>
+<summary>做完了怎么验<span class="sc">逐条勾 · 最后一条最重要</span></summary>
+<div class="dc">
+
+<h3>通用五条</h3>
+<ul class="chk">
+<li>改一下来源里的值，刷新，页面跟着变（不能写死）</li>
+<li>页面上能看到「数据更新到 X」，且<strong>跟着数据走</strong>，不是写死当天日期</li>
+<li>每个数旁边能看出它是怎么算的 / 从哪来的</li>
+<li>普通办公电脑打开，<strong>不滚动</strong>就看得到{{最关键那几样}}</li>
+<li>断掉来源刷新，是一句人话 —— <strong>不是白屏、不是报错、更不能显示成 0</strong></li>
+</ul>
+
+<!-- 下面按形态挑，用不上的整节删掉。完整清单见 references/03_做成什么样.md -->
+<h3>{{形态名，比如「能查」}}</h3>
+<ul class="chk">
+<li>{{验收条件，要能一条条勾}}</li>
+</ul>
+
+<div class="card red">
+<p style="margin:0"><strong>最后一条（最重要）</strong><br>
+{{槽 6 那句话改写成一个可以现场验的动作}}<br>
+<span style="font-size:13px">前面全勾上、这条没做到，这东西就是失败的。</span></p>
+</div>
+
+</div>
+</details>
+
+<details>
+<summary>明确不做 · 我替他定的 · 他的技术倾向<span class="sc">防范围蔓延</span></summary>
+<div class="dc">
+<h3>第一版不做</h3>
+<ul>
+<li><strong>{{不做什么}}</strong> —— {{为什么}}</li>
+</ul>
+
+<h3>我替他定的（都念给他听过了）</h3>
+<ul>
+<li>{{替他定的}} <span class="tag tag-def">我先按这个记</span> {{他的反应}}</li>
+</ul>
+<p style="font-size:13px;color:var(--ink3)">
+不念的话，这些就成了他没同意过的东西 —— 做出来他会说「我没说要这样」。</p>
+
+<h3>他自己的技术倾向</h3>
+<p>{{他提过什么技术方向}}。<strong>这份不写进去</strong> ——
+写了等于替承接方定了怎么做，<strong>而他的判断依据比我们多</strong>。</p>
+
+<h3>这些我们不定</h3>
+<table>
+<tr><th style="width:40%">不写进这份</th><th>为什么</th></tr>
+<tr><td>用什么做 · 放哪 · 怎么部署</td><td>承接方手上有什么、熟什么，他比我们清楚</td></tr>
+<tr><td>{{这个案子里具体的技术问题}}</td><td>{{为什么留给他}}</td></tr>
+<tr><td>颜色 · 字体 · 间距</td><td>只要求一屏看得全。<strong>好看不是验收条件</strong></td></tr>
+</table>
+<p style="font-size:13px;color:var(--ink3)">
+⚠️ 上面「页面长什么样」之所以能定，是因为每条都<strong>指得回访谈里某一句业务事实</strong>。
+指不回去的，就不该我们定。</p>
+</div>
+</details>
+
+<details>
+<summary>访谈留底<span class="sc">三个月后要查「当初为什么这么定」时看</span></summary>
+<div class="dc">
+<p><strong>前面是结论，这里是结论怎么来的。</strong>
+三个月后回头改，光看结论没人分得清哪条是他说的、哪条是我替他定的。</p>
+
+<h3>关键的六问六答</h3>
+<!-- 一槽一行。第三列的小灰字写「当时怎么处理的」或「这一答后来变成了什么」 -->
+<table>
+<tr><th style="width:32%">问</th><th>答（{{谁答的}}）</th></tr>
+<tr><td>{{问题}}</td><td>{{他的原话}}<br>
+  <span style="font-size:12.5px;color:var(--ink3)">{{处理说明 / 这条后来长成了哪条风险}}</span></td></tr>
+</table>
+
+<h3>这次访谈的{{几}}个洞</h3>
+<ul>
+<li><strong>{{洞}}</strong> —— {{影响}} <span style="color:var(--ink3)">→ {{对应哪条风险 / 哪个步骤}}</span></li>
+</ul>
+<p style="font-size:13px;color:var(--ink3)">
+⚠️ 这几条不许省。<strong>上面那些风险不是凭空判断的，是从访谈的缺口里长出来的</strong> ——
+没有这一节，读的人会以为一切都问全了。</p>
+</div>
+</details>
+
+<footer>
+{{公司}} · {{模块名}} · 开工计划书 · {{版本}} · {{日期}}<br>
+前面一屏看完能开工；细节和留底折起来，需要时再展开。<br>
+这份只管「想清楚」——怎么做、放在哪、用什么，由承接的一方自己定。
+</footer>
+
+</div>
+</body>
+</html>
