@@ -1,94 +1,138 @@
 #!/usr/bin/env python3
-"""Validate a deployed module contract without placing a token on the command line."""
+"""Validate a deployed protocol-v2 subsystem without exposing its token."""
 
 from __future__ import annotations
 
 import argparse
 import json
 import os
-from urllib.parse import urlencode
-from urllib.request import Request, urlopen
+import re
+from urllib.error import HTTPError
+from urllib.parse import urlencode, urljoin, urlsplit
+from urllib.request import HTTPRedirectHandler, Request, build_opener
+
+
+class RejectRedirects(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001
+        raise HTTPError(req.full_url, code, "重定向不被接入协议允许", headers, fp)
+
+
+OPENER = build_opener(RejectRedirects)
+STABLE_KEY_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 
 
 def get_json(url: str, token: str) -> dict:
-    headers = {"Accept": "application/json"}
+    headers = {"Accept": "application/json", "User-Agent": "Aifabei-Contract-Validator/2.0"}
     if token:
         headers["Authorization"] = f"Bearer {token}"
-    with urlopen(Request(url, headers=headers), timeout=15) as response:
+    with OPENER.open(Request(url, headers=headers), timeout=15) as response:
+        if not 200 <= response.status < 300:
+            raise SystemExit(f"{url} 返回 HTTP {response.status}")
         return json.load(response)
 
 
+def same_origin(left: str, right: str) -> bool:
+    first, second = urlsplit(left), urlsplit(right)
+    return (first.scheme, first.hostname, first.port) == (second.scheme, second.hostname, second.port)
+
+
 def main() -> int:
-    parser = argparse.ArgumentParser(description="验证已部署模块系统的清单、协作部门、操作和事件游标")
+    parser = argparse.ArgumentParser(description="验证爱法贝模块系统 v2 接入协议")
     parser.add_argument("--base-url", required=True)
     parser.add_argument("--token-env", default="ZHUOJIAN_SUBSYSTEM_TOKEN", help="保存 Token 的环境变量名")
     args = parser.parse_args()
-    base = args.base_url.rstrip("/")
+    base = args.base_url.rstrip("/") + "/"
     token = os.environ.get(args.token_env, "")
-    manifest = get_json(f"{base}/api/integration/manifest", token)
-    events = get_json(f"{base}/api/integration/events?{urlencode({'after': 0, 'limit': 1})}", token)
-    required_manifest = ("protocol", "version", "enterprise", "applicationSlug", "modules")
+
+    health = get_json(urljoin(base, "health"), token)
+    manifest_url = urljoin(base, "api/integration/manifest")
+    manifest = get_json(manifest_url, token)
+    required_manifest = ("protocol", "version", "enterprise", "applicationSlug", "eventsUrl", "auth", "modules")
     missing = [key for key in required_manifest if key not in manifest]
     if missing:
         raise SystemExit("清单缺少字段：" + "、".join(missing))
-    if not isinstance(manifest.get("version"), int) or manifest["version"] < 2:
-        raise SystemExit("清单 version 必须为模块聚合协议版本 2 或更高。")
+    if manifest.get("protocol") != "zhuojian-subsystem" or manifest.get("version") != 2:
+        raise SystemExit("清单必须使用 zhuojian-subsystem version 2。")
     enterprise = manifest.get("enterprise")
     if not isinstance(enterprise, dict) or not enterprise.get("key") or not enterprise.get("name"):
         raise SystemExit("清单 enterprise 必须包含稳定 key 和 name。")
+    auth = manifest.get("auth")
+    if (
+        not isinstance(auth, dict)
+        or auth.get("ssoPath") != "/api/integration/sso"
+        or auth.get("algorithm") != "HS256"
+    ):
+        raise SystemExit("清单 auth 必须声明固定 ssoPath 和 HS256。")
+
+    events_url = urljoin(manifest_url, str(manifest["eventsUrl"]))
+    if not same_origin(base, events_url):
+        raise SystemExit("eventsUrl 必须与系统入口同源。")
+    events = get_json(f"{events_url}?{urlencode({'after': 0, 'limit': 1})}", token)
+    if not all(key in events for key in ("items", "nextAfter", "hasMore")):
+        raise SystemExit("事件接口缺少 items/nextAfter/hasMore。")
+
     modules = manifest.get("modules")
     if not isinstance(modules, list) or not modules:
         raise SystemExit("清单 modules 必须是非空列表。")
     module_keys: set[str] = set()
     action_keys: set[str] = set()
+    department_keys: set[str] = set()
     for index, module in enumerate(modules):
         label = f"modules[{index}]"
-        if not isinstance(module, dict) or not all(module.get(key) for key in ("key", "name", "route")):
-            raise SystemExit(f"{label} 必须包含 key/name/route。")
-        if module["key"] in module_keys:
-            raise SystemExit(f"模块 key 重复：{module['key']}")
-        module_keys.add(module["key"])
-        if "department" in module:
-            raise SystemExit(f"{label} 不应使用单值 department，请迁移为 departments 列表。")
+        if not isinstance(module, dict) or not all(module.get(key) for key in ("moduleKey", "name", "route")):
+            raise SystemExit(f"{label} 必须包含 moduleKey/name/route。")
+        route = str(module["route"])
+        parsed_route = urlsplit(route)
+        if not route.startswith("/") or route.startswith("//") or parsed_route.scheme or parsed_route.netloc:
+            raise SystemExit(f"{label}.route 必须是站内相对路径。")
+        module_key = str(module["moduleKey"])
+        if not STABLE_KEY_RE.fullmatch(module_key) or module_key in module_keys:
+            raise SystemExit(f"子模块 moduleKey 格式无效或重复：{module_key}")
+        module_keys.add(module_key)
         departments = module.get("departments")
         if not isinstance(departments, list) or not departments:
-            raise SystemExit(f"{label}.departments 必须是非空列表，不能使用单值 department。")
-        department_keys: set[str] = set()
+            raise SystemExit(f"{label}.departments 必须是非空列表。")
+        owners = 0
+        local_departments: set[str] = set()
         for department_index, department in enumerate(departments):
             if not isinstance(department, dict) or not all(department.get(key) for key in ("key", "name", "role")):
                 raise SystemExit(f"{label}.departments[{department_index}] 必须包含 key/name/role。")
-            if department["key"] in department_keys:
-                raise SystemExit(f"{label} 的部门 key 重复：{department['key']}")
-            department_keys.add(department["key"])
+            key = str(department["key"])
+            if not STABLE_KEY_RE.fullmatch(key) or key in local_departments:
+                raise SystemExit(f"{label} 的部门 key 格式无效或重复：{key}")
+            local_departments.add(key)
+            department_keys.add(key)
+            owners += int(department["role"] == "owner")
+        if owners != 1:
+            raise SystemExit(f"{label} 必须恰好有一个 owner 部门。")
         actions = module.get("actions")
         if not isinstance(actions, list):
-            raise SystemExit(f"{label}.actions 必须是列表；没有 AI 可调用操作时使用空列表。")
+            raise SystemExit(f"{label}.actions 必须是列表。")
         for action_index, action in enumerate(actions):
             action_label = f"{label}.actions[{action_index}]"
-            if not isinstance(action, dict) or not all(
-                action.get(key) for key in ("key", "name", "method", "path", "permission")
-            ):
-                raise SystemExit(f"{action_label} 必须包含 key/name/method/path/permission。")
-            if action["key"] in action_keys:
-                raise SystemExit(f"操作 key 重复：{action['key']}")
-            action_keys.add(action["key"])
-            if action["method"].upper() != "POST" or not action["path"].startswith("/api/integration/actions/"):
-                raise SystemExit(f"{action_label} 必须使用 POST /api/integration/actions/{{actionKey}}。")
-            if not isinstance(action.get("requiresConfirmation"), bool):
-                raise SystemExit(f"{action_label}.requiresConfirmation 必须是布尔值。")
-    if not all(key in events for key in ("items", "nextAfter", "hasMore")):
-        raise SystemExit("事件接口缺少 items/nextAfter/hasMore。")
-    department_keys = {
-        department["key"]
-        for module in modules
-        for department in module["departments"]
-    }
-    action_count = sum(len(module["actions"]) for module in modules)
+            required = (
+                "actionKey", "name", "operation", "aiEnabled", "requiresConfirmation",
+                "inputSchema", "resultSchema",
+            )
+            if not isinstance(action, dict) or any(key not in action for key in required):
+                raise SystemExit(f"{action_label} 缺少 v2 操作字段。")
+            key = str(action["actionKey"])
+            if not STABLE_KEY_RE.fullmatch(key) or key in action_keys:
+                raise SystemExit(f"操作 actionKey 格式无效或重复：{key}")
+            action_keys.add(key)
+            if action["operation"] not in {"query", "create", "update", "delete", "export"}:
+                raise SystemExit(f"{action_label}.operation 不受支持。")
+            if not isinstance(action["aiEnabled"], bool) or not isinstance(action["requiresConfirmation"], bool):
+                raise SystemExit(f"{action_label} 的 AI/确认标记必须是布尔值。")
+            if not isinstance(action["inputSchema"], dict) or not isinstance(action["resultSchema"], dict):
+                raise SystemExit(f"{action_label} 的输入输出 Schema 必须是对象。")
+
     print(
-        f"接入验证通过：企业 {enterprise['name']}，应用 {manifest['applicationSlug']}，"
-        f"模块 {len(modules)} 个，参与部门 {len(department_keys)} 个，操作 {action_count} 个。"
+        f"接入验证通过：健康状态 {health.get('status', 'ok')}，企业 {enterprise['name']}，"
+        f"系统 {manifest['applicationSlug']}，子模块 {len(modules)} 个，"
+        f"参与部门 {len(department_keys)} 个，操作 {len(action_keys)} 个。"
     )
-    print("Token 未输出。")
+    print("Token 未输出；SSO 和 action 只做结构校验，不执行真实业务操作。")
     return 0
 
 

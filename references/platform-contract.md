@@ -1,44 +1,29 @@
-# 平台接入最小协议
+# 灼见模块系统接入协议 v2
 
-## 业务对象与稳定标识
+## 稳定标识
 
-平台固定使用“企业 → 模块 → 参与部门 → 页面/数据/操作”的层级：
+- `enterprise.key`：企业稳定标识，爱法贝使用 `aifabei`。
+- `applicationSlug`：独立模块系统标识，也是测试子域名前缀。
+- `moduleKey`：系统内子模块标识，是最小授权单位。
+- `departments[].key`：与灼见部门 slug 对应；每个子模块恰好一个 `owner`。
+- `actionKey`：系统内全局唯一的业务操作标识。
 
-- `enterpriseKey`：企业稳定标识，爱法贝环境使用平台分配的企业 key。
-- `applicationSlug`：独立部署系统的稳定标识。
-- `moduleKey`：业务模块稳定标识，是开发、授权、接入和聚合的主要边界。
-- `departments`：模块参与部门列表；每项至少有稳定 `key`、名称和职责。一个模块允许一个或多个部门。
-- `actionKey`：模块内稳定操作标识。页面按钮与 AI 调用复用同一业务命令。
+显示名称可以修改，稳定标识不能随页面文案改变。
+稳定标识只使用小写字母、数字、点、下划线和短横线，并以字母或数字开头。
 
-名称可以调整，稳定标识不要随页面文案改变。后续新增页面、操作或参与部门时更新清单即可；中央 SaaS 应动态读取清单，不要求逐项人工硬编码。
+## 固定端点
 
-## iframe 上下文
+| 方法 | 路径 | 用途 |
+|---|---|---|
+| GET | `/health` | 无副作用健康检查，返回 2xx |
+| GET | `/api/integration/manifest` | 读取模块、部门和操作目录 |
+| GET | `/api/integration/events?after=&limit=` | 顺序增量事件 |
+| POST | `/api/integration/actions/{actionKey}` | 页面和 AI 共用的业务命令出口 |
+| GET | `/api/integration/sso?ticket=&redirect=` | iframe 短票据换模块会话 |
 
-子系统页面在模块切换、实体选择、筛选变化和成功保存后发送：
+Manifest 和事件使用独立静态 Bearer Token。SSO 与 action 使用灼见以同一接入密钥签发的 60 秒 HS256 JWT，但不能使用灼见全局用户 JWT 密钥。
 
-```json
-{
-  "type": "zhuojian:context",
-  "version": 1,
-  "enterprise_key": "aifabei",
-  "application_slug": "stable-application-slug",
-  "route": "/current-module",
-  "module_key": "stable_module_key",
-  "module_name": "业务人员看得懂的名称",
-  "department_keys": ["design", "production"],
-  "entity_type": "style",
-  "entity_id": "203A023",
-  "filters": {},
-  "selection": {},
-  "data_version": "optional-change-version"
-}
-```
-
-消息不得含 Token、Cookie、密钥、密码、整份业务数据或内部文件路径。中央平台校验 iframe source、配置域名、版本和大小。
-
-## 集成清单
-
-`GET /api/integration/manifest` 至少返回协议名与版本、企业、应用 slug、模块、参与部门、页面、操作、事件接口地址和 Bridge 版本。例如：
+## Manifest
 
 ```json
 {
@@ -46,10 +31,12 @@
   "version": 2,
   "enterprise": {"key": "aifabei", "name": "爱法贝"},
   "applicationSlug": "sample-review",
+  "applicationName": "样衣协同系统",
   "bridgeVersion": 1,
   "eventsUrl": "/api/integration/events",
+  "auth": {"ssoPath": "/api/integration/sso", "algorithm": "HS256"},
   "modules": [{
-    "key": "sample_review",
+    "moduleKey": "sample_review",
     "name": "样衣评审",
     "route": "/sample-review",
     "departments": [
@@ -57,46 +44,57 @@
       {"key": "production", "name": "生产部", "role": "collaborator"}
     ],
     "actions": [{
-      "key": "sample_review.approve",
+      "actionKey": "sample_review.approve",
       "name": "通过评审",
-      "method": "POST",
-      "path": "/api/integration/actions/sample_review.approve",
-      "permission": "sample_review.approve",
-      "requiresConfirmation": true
+      "description": "确认当前样衣评审通过",
+      "operation": "update",
+      "aiEnabled": true,
+      "requiresConfirmation": true,
+      "inputSchema": {
+        "type": "object",
+        "properties": {"styleId": {"type": "string"}},
+        "required": ["styleId"]
+      },
+      "resultSchema": {"type": "object"}
     }]
   }]
 }
 ```
 
-当前模块聚合协议版本为 `2`。`departments` 使用列表，即使当前只有一个部门也不要降级为单值 `department`。`role` 可使用 `owner`、`collaborator`、`approver`、`consumer` 或项目定义的稳定角色。
+`operation` 只能是 `query/create/update/delete/export`。清单新增内容会被自动发现但不会自动授权；移除 action 时平台将其停用。
 
-## 人与 AI 共用操作
+## 双层鉴权
 
-模块内所有会改变业务状态的关键操作都进入统一命令层：
+### iframe SSO
 
-1. 页面按钮调用模块自己的命令处理器。
-2. `POST /api/integration/actions/{actionKey}` 在完成平台身份、企业、部门、模块权限和输入校验后，调用同一个命令处理器。
-3. AI 小助手从 manifest 读取允许的操作，不通过模拟点击绕过业务权限。
-4. 操作请求携带稳定的 `requestId`；重复请求返回同一业务结果，避免 AI 重试造成重复写入。
-5. 高风险操作在 manifest 标记 `requiresConfirmation: true`，中央 SaaS 获得用户确认后才调用。
+灼见先检查用户的子模块 `view` 权限，再生成 `typ=zhuojian-sso` 的短票据。模块必须验证：
 
-建议请求体包含：
+- HS256 签名、`iss=zhuojian-saas`、`aud=applicationSlug`、`typ`、`exp`。
+- `organizationId`、`sub`、`moduleKey` 和 `permissions`。
+- `jti` 只能消费一次；保存到短期缓存直到票据过期。
+- `redirect` 只能是模块站内相对路径。
+
+验证后建立 `HttpOnly; Secure; SameSite=Lax` 的短期模块会话，再 302 到不含票据的页面。
+
+### action 身份
+
+灼见调用 action 时使用 `typ=zhuojian-action` 的 60 秒 JWT，额外包含 `actionKey`、`operation`、`requestId`。模块不得信任请求体中的身份字段，必须从 JWT 读取身份并再次检查模块权限。
+
+## 人与 AI 共用命令
+
+页面按钮和 `/api/integration/actions/{actionKey}` 必须调用同一个应用服务函数。平台请求体：
 
 ```json
 {
   "requestId": "stable-idempotency-id",
   "moduleKey": "sample_review",
-  "entityType": "style",
-  "entityId": "203A023",
-  "input": {"result": "approved"}
+  "params": {"styleId": "203A023"}
 }
 ```
 
-返回业务结果、实体版本和所产生事件的 `eventId`，但不返回 Token、内部路径或无关整表数据。
+模块按 `applicationSlug + requestId` 保存幂等结果。响应仅返回当前操作结果及事件摘要，不返回 Token、内部路径或无关整表数据。
 
-## 业务事件
-
-`GET /api/integration/events?after=<sequence>&limit=<n>` 返回：
+## 事件
 
 ```json
 {
@@ -111,7 +109,6 @@
     "entityId": "203A023",
     "action": "completed",
     "occurredAt": "2026-08-27T16:30:00+08:00",
-    "dataVersion": "version",
     "payload": {"result": "approved"}
   }],
   "nextAfter": 18,
@@ -119,11 +116,28 @@
 }
 ```
 
-事件与业务写入尽量在同一数据库事务内形成 outbox。消费者只有处理成功后才保存 `nextAfter`，并按 `eventId` 幂等。事件只放路由所需摘要；完整数据通过受控查询 API 获取。
+事件序号严格递增，`eventId` 全局稳定。事件与业务写入尽量使用同事务 outbox；事件只包含路由所需摘要。
 
-## 鉴权和权限
+## iframe Bridge
 
-- 系统间调用使用独立 Bearer Token 或后续统一网关签名，不复用 root 密码。
-- 中央 SaaS 决定企业/部门/模块可见性和操作授权；模块系统仍校验每次写操作权限。
-- 平台数据库不继承模块业务表。中央层只保存企业、模块及参与部门注册、授权、操作目录、事件游标、幂等记录、跨模块待办和必要索引。
-- 清单新增内容可以自动发现；删除或改变稳定标识属于破坏性变更，应先标记弃用并保留兼容期。
+页面在模块、实体或筛选变化后发送：
+
+```json
+{
+  "type": "zhuojian:context",
+  "version": 1,
+  "enterprise_key": "aifabei",
+  "application_slug": "sample-review",
+  "route": "/sample-review",
+  "module_key": "sample_review",
+  "module_name": "样衣评审",
+  "department_keys": ["design", "production"],
+  "entity_type": "style",
+  "entity_id": "203A023",
+  "filters": {},
+  "selection": {},
+  "data_version": "optional-version"
+}
+```
+
+Bridge 不得包含 Token、Cookie、密码、整份业务数据或内部文件路径。模块响应头的 CSP `frame-ancestors` 只允许灼见正式与测试域名。

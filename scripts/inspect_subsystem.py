@@ -37,7 +37,14 @@ def main() -> int:
     markers = contains(
         root,
         ["index.html", "parser_service.py", "app.py", "server.py", "README.md", "docker-compose.yml"],
-        ("/health", "zhuojian:context", "/api/integration/manifest", "/api/integration/actions", "/api/integration/events"),
+        (
+            "/health",
+            "zhuojian:context",
+            "/api/integration/manifest",
+            "/api/integration/actions",
+            "/api/integration/events",
+            "/api/integration/sso",
+        ),
     )
     report = {"root": str(root), "files": files, "contract": markers}
     if args.json:
