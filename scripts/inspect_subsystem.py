@@ -14,6 +14,17 @@ def contains(root: Path, names: list[str], markers: tuple[str, ...]) -> dict[str
         path = root / name
         if path.is_file() and path.stat().st_size <= 5_000_000:
             text += "\n" + path.read_text(encoding="utf-8", errors="replace")
+    scanned = 0
+    ignored = {".git", ".venv", "node_modules", "dist", "build", "data"}
+    for path in root.rglob("*"):
+        if scanned >= 500 or not path.is_file() or any(part in ignored for part in path.parts):
+            continue
+        if path.suffix.lower() not in {".py", ".js", ".ts", ".tsx", ".html", ".md", ".yml", ".yaml"}:
+            continue
+        if path.stat().st_size > 5_000_000:
+            continue
+        text += "\n" + path.read_text(encoding="utf-8", errors="replace")
+        scanned += 1
     return {marker: marker in text for marker in markers}
 
 
