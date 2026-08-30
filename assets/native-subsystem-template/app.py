@@ -6,7 +6,7 @@ import json
 import os
 import sqlite3
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -133,6 +133,17 @@ def page_allows(module_key: str, page_key: str, action_key: str) -> bool:
     return bool(page and page["moduleKey"] == module_key and action_key in page.get("actionKeys", []))
 
 
+def session_allows(session: dict, module_key: str, page_key: str, action_key: str) -> bool:
+    if session.get("moduleKey") != module_key or action_key not in (session.get("actionKeys") or []):
+        return False
+    page = (session.get("pageAccess") or {}).get(page_key)
+    return bool(
+        isinstance(page, dict)
+        and action_key in (page.get("actionKeys") or [])
+        and page_allows(module_key, page_key, action_key)
+    )
+
+
 def required_permission(operation: str) -> str:
     return {
         "query": "ai_query", "create": "ai_create", "update": "ai_update",
@@ -143,14 +154,14 @@ def required_permission(operation: str) -> str:
 def emit_event(connection: sqlite3.Connection, module_key: str, event_type: str, entity_id: str, payload: dict) -> None:
     connection.execute(
         "INSERT INTO outbox(event_id,event_type,module_key,entity_type,entity_id,occurred_at,payload) VALUES(?,?,?,?,?,?,?)",
-        (uuid4().hex, event_type, module_key, module_key, entity_id, datetime.now(UTC).isoformat(), json.dumps(payload, ensure_ascii=False)),
+        (uuid4().hex, event_type, module_key, module_key, entity_id, datetime.now(timezone.utc).isoformat(), json.dumps(payload, ensure_ascii=False)),
     )
 
 
 def execute_business_action(action: dict, params: dict, expected_version: str | int | None) -> dict:
     operation = action["operation"]
     module_key = action["moduleKey"]
-    now = datetime.now(UTC).isoformat()
+    now = datetime.now(timezone.utc).isoformat()
     with db() as connection:
         if operation == "query":
             rows = connection.execute(
@@ -256,7 +267,7 @@ async def invoke_action(action_key: str, request: Request, authorization: str | 
                 if stored:
                     return json.loads(stored["result"])
                 raise HTTPException(409, "Confirmation has already been consumed")
-            connection.execute("INSERT INTO consumed_confirmations VALUES(?,?)", (confirmation_id, datetime.now(UTC).isoformat()))
+            connection.execute("INSERT INTO consumed_confirmations VALUES(?,?)", (confirmation_id, datetime.now(timezone.utc).isoformat()))
     with db() as connection:
         stored = connection.execute("SELECT action_key,result FROM request_results WHERE request_id=?", (request_id,)).fetchone()
         if stored:
@@ -265,7 +276,7 @@ async def invoke_action(action_key: str, request: Request, authorization: str | 
             return json.loads(stored["result"])
     result = execute_business_action(action, params, body.get("expectedVersion"))
     with db() as connection:
-        connection.execute("INSERT INTO request_results VALUES(?,?,?,?)", (request_id, action_key, json.dumps(result, ensure_ascii=False), datetime.now(UTC).isoformat()))
+        connection.execute("INSERT INTO request_results VALUES(?,?,?,?)", (request_id, action_key, json.dumps(result, ensure_ascii=False), datetime.now(timezone.utc).isoformat()))
     return result
 
 
@@ -281,7 +292,7 @@ async def receive_event(request: Request, authorization: str | None = Header(def
         if existing:
             return {"status": "duplicate", **json.loads(existing["result"])}
         result = {"eventId": event["eventId"], "accepted": True}
-        connection.execute("INSERT INTO event_deliveries VALUES(?,?,?,?,?)", (delivery_id, event["eventId"], event["eventType"], json.dumps(result), datetime.now(UTC).isoformat()))
+        connection.execute("INSERT INTO event_deliveries VALUES(?,?,?,?,?)", (delivery_id, event["eventId"], event["eventType"], json.dumps(result), datetime.now(timezone.utc).isoformat()))
     return {"status": "accepted", **result}
 
 
@@ -293,9 +304,9 @@ async def invoke_page_action(action_key: str, request: Request):
         raise HTTPException(401, "Open this module from ZhuoJian SaaS")
     body = await request.json()
     page_key = str(body.get("pageKey") or "")
-    if session.get("moduleKey") != action["moduleKey"] or not page_allows(action["moduleKey"], page_key, action_key):
+    if not session_allows(session, action["moduleKey"], page_key, action_key):
         raise HTTPException(403, "Page action context mismatch")
-    permissions = set(session.get("permissions") or [])
+    permissions = set((session.get("pageAccess") or {}).get(page_key, {}).get("permissions") or [])
     if "view" not in permissions or required_permission(action["operation"]) not in permissions:
         raise HTTPException(403, "Page action permission denied")
     if action.get("requiresConfirmation") and body.get("confirmed") is not True:
@@ -312,11 +323,35 @@ def sso(request: Request, ticket: str, redirect: str = "/"):
     module_key, jti = str(claims.get("moduleKey") or ""), str(claims.get("jti") or "")
     if module_key not in MODULES or not jti:
         raise HTTPException(403, "Invalid module session")
+    page_keys, action_keys, page_access = claims.get("pageKeys"), claims.get("actionKeys"), claims.get("pageAccess")
+    if (
+        not isinstance(page_keys, list) or not page_keys
+        or any(not isinstance(key, str) for key in page_keys)
+        or not isinstance(action_keys, list) or any(not isinstance(key, str) for key in action_keys)
+        or not isinstance(page_access, dict)
+    ):
+        raise HTTPException(403, "SSO page/action scope is required")
+    if set(page_keys) != set(page_access):
+        raise HTTPException(403, "SSO page scope mismatch")
+    for page_key in page_keys:
+        page = PAGES.get(str(page_key))
+        access = page_access.get(page_key)
+        if not page or page["moduleKey"] != module_key or not isinstance(access, dict):
+            raise HTTPException(403, "SSO page is outside the module")
+        if any(key not in page.get("actionKeys", []) or key not in action_keys for key in access.get("actionKeys") or []):
+            raise HTTPException(403, "SSO action is outside the page scope")
+    allowed_routes = {str(PAGES[key]["routePattern"]) for key in page_keys}
+    if redirect not in allowed_routes:
+        raise HTTPException(403, "SSO redirect is not an authorized page")
     with db() as connection:
         if connection.execute("SELECT 1 FROM consumed_tickets WHERE jti=?", (jti,)).fetchone():
             raise HTTPException(409, "SSO ticket was already consumed")
         connection.execute("INSERT INTO consumed_tickets VALUES(?,?)", (jti, int(claims["exp"])))
-    request.session.update({"sub": claims["sub"], "organizationId": claims["organizationId"], "moduleKey": module_key, "permissions": claims.get("permissions") or []})
+    request.session.update({
+        "sub": claims["sub"], "organizationId": claims["organizationId"],
+        "moduleKey": module_key, "permissions": claims.get("permissions") or [],
+        "pageKeys": page_keys, "actionKeys": action_keys, "pageAccess": page_access,
+    })
     return RedirectResponse(redirect, status_code=302)
 
 
@@ -327,4 +362,10 @@ def frontend(request: Request, path: str = ""):
         raise HTTPException(404)
     if not request.session.get("sub"):
         return JSONResponse({"detail": "Open this module from ZhuoJian SaaS"}, status_code=401)
+    page_key = next((
+        key for key in request.session.get("pageKeys") or []
+        if PAGES.get(key, {}).get("routePattern") == request.url.path
+    ), None)
+    if page_key is None:
+        return JSONResponse({"detail": "Page permission denied"}, status_code=403)
     return FileResponse(ROOT / "static" / "index.html")

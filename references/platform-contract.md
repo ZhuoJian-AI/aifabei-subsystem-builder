@@ -1,4 +1,4 @@
-# 灼见原生模块接入协议 v2.2
+# 灼见原生模块接入协议 v2.3
 
 `version` 始终是整数 `2`；兼容增强写入字符串 `contractRevision`。平台必须兼容没有 `contractRevision` 和 `pages` 的 v2.0 模块。
 
@@ -33,7 +33,7 @@
 {
   "protocol": "zhuojian-subsystem",
   "version": 2,
-  "contractRevision": "2.2",
+  "contractRevision": "2.3",
   "enterprise": {"key": "aifabei", "name": "爱法贝"},
   "applicationSlug": "sample-review",
   "applicationName": "样品评审系统",
@@ -84,7 +84,24 @@
 
 ### iframe SSO
 
-灼见先检查 `moduleKey` 的 `view` 权限，再签发 `typ=zhuojian-sso` 短票据。模块验证签名、`iss=zhuojian-saas`、`aud=applicationSlug`、`typ`、`exp`、企业、用户、`moduleKey`、权限和一次性 `jti`。`redirect` 必须是站内相对路径。成功后建立 `HttpOnly; Secure; SameSite=Lax` 会话并 302 到不含票据的页面。
+灼见先检查 `moduleKey` 的 `view` 权限，再签发 `typ=zhuojian-sso` 短票据。模块验证签名、`iss=zhuojian-saas`、`aud=applicationSlug`、`typ`、`exp`、企业、用户、`moduleKey`、权限和一次性 `jti`。`redirect` 必须是站内相对路径且命中获授权页面。成功后建立 `HttpOnly; Secure; SameSite=Lax` 会话并 302 到不含票据的页面。
+
+v2.3 SSO 票据还必须包含管理员最终授权的页面和操作 allowlist，模块不得用 Manifest 的部门建议值替代平台最终授权：
+
+```json
+{
+  "pageKeys": ["sample_review.approval"],
+  "actionKeys": ["sample_review.query", "sample_review.approve", "sample_review.export"],
+  "pageAccess": {
+    "sample_review.approval": {
+      "permissions": ["view", "ai_query", "ai_approve", "export"],
+      "actionKeys": ["sample_review.query", "sample_review.approve", "sample_review.export"]
+    }
+  }
+}
+```
+
+模块必须把 allowlist 保存到安全会话，只向前端返回允许的页面与按钮；服务端路由、页面 Action 和页面上下文也必须逐次校验 `pageAccess`。伪造 URL、前端显示错误或隐藏按钮均不能绕过服务端检查。
 
 ### Action
 

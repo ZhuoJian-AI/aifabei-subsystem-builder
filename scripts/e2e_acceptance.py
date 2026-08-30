@@ -85,6 +85,13 @@ def main() -> int:
         "iss": "zhuojian-saas", "aud": manifest["applicationSlug"], "typ": "zhuojian-sso",
         "sub": user_id, "organizationId": organization_id, "departmentId": "acceptance-dept",
         "teamId": None, "moduleKey": args.module_key, "permissions": ["view", "ai_query"],
+        "pageKeys": [args.page_key], "actionKeys": [args.query_action],
+        "pageAccess": {
+            args.page_key: {
+                "permissions": ["view", "ai_query"],
+                "actionKeys": [args.query_action],
+            },
+        },
         "jti": uuid4().hex, "iat": now, "exp": now + 60,
     }
     sso_url = urljoin(base, "api/integration/sso") + "?" + urlencode({"ticket": jwt(secret, sso_claims), "redirect": module["route"]})

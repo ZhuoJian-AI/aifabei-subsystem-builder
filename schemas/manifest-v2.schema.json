@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://zhuojianai.com/schemas/subsystem/manifest-v2.schema.json",
-  "title": "ZhuoJian subsystem manifest v2.2",
+  "title": "ZhuoJian subsystem manifest v2.3",
   "type": "object",
   "additionalProperties": true,
   "required": ["protocol", "version", "enterprise", "applicationSlug", "applicationName", "eventsUrl", "eventDeliveriesUrl", "auth", "modules"],

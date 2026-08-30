@@ -42,6 +42,7 @@ description: "让管理员 AI 初始化爱法贝企业开发环境，让业务 A
 - 固定端点：`/health`、Manifest、事件拉取、事件投递、Action 和 SSO。
 - Manifest `version` 保持整数 `2`，新增能力用 `contractRevision` 表示；按 `schemas/manifest-v2.schema.json` 输出。
 - 每个子模块恰好一个 owner 部门；每个参与部门必须显式声明 `pageKeys` 和 `actionKeys` 作为建议授权上限，页面必须声明 `pageKey`、路由、上下文 Schema 和允许的 Action。平台管理员或企业管理员仍须确认，Manifest 不能自行扩权。
+- SSO 会话必须保存灼见签发的 `pageKeys`、`actionKeys` 和 `pageAccess`。子系统只渲染获授权页面，直接访问未授权路由返回 403；页面按钮和 `/api/ui/actions/*` 还必须再次校验当前页面与 Action 都在会话 allowlist 中。只校验模块级 `permissions` 不合格。
 - 页面按钮与 AI 调用同一个应用服务函数和权限判断。
 - AI 工具必须同时通过用户、企业、应用、子模块、页面、Action 和管理员授权；`aiEnabled=false` 永不暴露给 AI。
 - 查询、新增、修改、删除、导出统一走 Action。修改和删除使用 `expectedVersion`；版本冲突返回 HTTP 409。

@@ -84,7 +84,7 @@ def main() -> int:
     config = {
         "protocol": "zhuojian-subsystem",
         "version": 2,
-        "contractRevision": "2.2",
+        "contractRevision": "2.3",
         "enterprise": {"key": "aifabei", "name": "爱法贝"},
         "applicationSlug": application_slug,
         "applicationName": args.application_name.strip(),

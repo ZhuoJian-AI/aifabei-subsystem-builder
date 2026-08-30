@@ -8,7 +8,7 @@ import re
 from pathlib import Path
 
 
-TEXT_SUFFIXES = {".html", ".js", ".jsx", ".ts", ".tsx", ".vue", ".svelte"}
+TEXT_SUFFIXES = {".html", ".js", ".jsx", ".ts", ".tsx", ".vue", ".svelte", ".py"}
 IGNORED_PARTS = {".git", ".venv", "node_modules", "dist", "build", "data"}
 WILDCARD_POST_MESSAGE = re.compile(
     r"postMessage\s*\((?:(?!;).){0,8000}?,\s*(['\"])\*\1\s*\)",
@@ -34,21 +34,30 @@ def main() -> int:
         parser.error(f"目录不存在：{root}")
 
     context_found = False
+    page_scope_tokens: set[str] = set()
     failures: list[str] = []
     for path in source_files(root):
         text = path.read_text(encoding="utf-8", errors="replace")
         context_found = context_found or "zhuojian:context" in text
+        page_scope_tokens.update(
+            token for token in ("pageKeys", "actionKeys", "pageAccess") if token in text
+        )
         if WILDCARD_POST_MESSAGE.search(text):
             failures.append(f"{path.relative_to(root)}: postMessage targetOrigin 禁止使用 '*' ")
 
     if not context_found:
         failures.append("未找到 zhuojian:context 页面上下文 Bridge")
+    missing_scope = {"pageKeys", "actionKeys", "pageAccess"} - page_scope_tokens
+    if missing_scope:
+        failures.append(
+            "未实现 v2.3 SSO 页面/操作 allowlist：" + ", ".join(sorted(missing_scope))
+        )
     if failures:
         print("SOURCE VALIDATION FAILED")
         for failure in failures:
             print(f"- {failure}")
         return 1
-    print("SOURCE VALIDATION PASS: page context bridge uses an explicit parent origin")
+    print("SOURCE VALIDATION PASS: bridge origin and v2.3 SSO page/action scope are present")
     return 0
 
 
