@@ -35,7 +35,7 @@ description: "让管理员 AI 初始化爱法贝企业开发环境，让业务 A
 - 新原生模块参考灼见公开源码 `https://github.com/ZhuoJian-AI/ai-platform`，记录参考提交；以本 Skill 的 Schema 和版本化契约为准，不依赖平台私有数据库结构。
 - 从空目录开发时先运行 `python <skill>/scripts/scaffold_subsystem.py --help`。
 - 已有项目先运行 `python <skill>/scripts/inspect_subsystem.py --path <项目根目录> --json`。
-- GitHub 不是业务用户前置条件。业务 AI 只使用本地 Git 并输出 `companySlug`、`moduleSlug` 和建议仓库名；创建私有仓库、推送和绑定 Coolify 由管理员 AI 或灼见发布服务使用机器身份完成，规则见 [仓库命名与自动发布](references/repository-publishing.md)。
+- GitHub 不是业务用户前置条件。业务 AI 只使用本地 Git；首次发布时调用 `scripts/publish_subsystem.py`，由灼见中央发布服务创建私有仓库并签发仅限该仓库、短时有效的推送 Token。GitHub App 私钥不得进入 Skill、企业 ECS、仓库、日志或回复，规则见 [仓库命名与自动发布](references/repository-publishing.md)。
 
 ## 原生模块必须满足
 
@@ -64,6 +64,14 @@ python <skill>/scripts/validate_source.py --path <模块项目目录>
 python <skill>/scripts/validate_endpoint.py --base-url https://<模块域名>
 python <skill>/scripts/e2e_acceptance.py --base-url https://<模块域名> --module-key <moduleKey> --page-key <pageKey> --query-action <actionKey>
 ```
+
+首次发布或后续更新由业务负责人明确说“发布/部署”后运行：
+
+```text
+python <skill>/scripts/publish_subsystem.py --path <模块项目目录>
+```
+
+脚本从环境读取 `ZHUOJIAN_PLATFORM_URL` 和企业级 `ZHUOJIAN_PUBLISH_KEY`，不要求业务用户登录 GitHub；它自动查找或创建规范仓库并推送当前提交。缺少公司环境档案或发布凭证时停在“等待管理员首次初始化”，不得向用户索要 GitHub 账号或把组织私钥复制到 ECS。
 
 接入密钥只通过环境变量或交互式隐藏输入传递，绝不写入命令参数、仓库、日志或回复。管理员可在灼见“接入模块系统”向导登记；已有安全管理员 Token 时，也可运行 `scripts/register_subsystem.py --help` 自动完成发现、创建和同步。业务 AI 不自行授予部门权限。
 
