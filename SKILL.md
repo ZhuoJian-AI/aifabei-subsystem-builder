@@ -46,7 +46,7 @@ description: "让管理员 AI 初始化爱法贝企业开发环境，让业务 A
 - AI 工具必须同时通过用户、企业、应用、子模块、页面、Action 和管理员授权；`aiEnabled=false` 永不暴露给 AI。
 - 查询、新增、修改、删除、导出统一走 Action。修改和删除使用 `expectedVersion`；版本冲突返回 HTTP 409。
 - 高风险操作声明 `requiresConfirmation=true`，校验灼见确认声明、参数哈希和幂等 `requestId`；拒绝、过期和重复批准不得重复执行。
-- iframe Bridge 只发送当前页面和选中实体的摘要，不传 Token、Cookie、密码或整表数据。
+- iframe Bridge 只发送当前页面和选中实体的摘要，不传 Token、Cookie、密码或整表数据；`postMessage` 的 `targetOrigin` 必须取经 HTTPS 校验的灼见父页面来源，禁止使用 `"*"`。
 - 跨系统数据流使用版本化事件；目标系统按 `eventId` 幂等消费，不共享数据库。
 
 ## 部署与登记
@@ -56,6 +56,7 @@ description: "让管理员 AI 初始化爱法贝企业开发环境，让业务 A
 部署后依次运行：
 
 ```text
+python <skill>/scripts/validate_source.py --path <模块项目目录>
 python <skill>/scripts/validate_endpoint.py --base-url https://<模块域名>
 python <skill>/scripts/e2e_acceptance.py --base-url https://<模块域名> --module-key <moduleKey> --page-key <pageKey> --query-action <actionKey>
 ```

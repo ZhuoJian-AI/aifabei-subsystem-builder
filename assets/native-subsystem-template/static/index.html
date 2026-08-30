@@ -4,8 +4,10 @@
 <body><div class="bar"><h1>__APPLICATION_NAME__ · __MODULE_NAME__</h1><span class="muted">灼见原生模块</span></div><main class="main"><div class="actions"><button id="refresh">刷新</button></div><div id="status" class="muted">正在读取业务数据…</div><div id="records"></div></main>
 <script>
 const moduleKey='__MODULE_KEY__', pageKey='__MODULE_KEY__.list';
-function sendContext(){parent.postMessage({type:'zhuojian:context',version:1,enterprise_key:'aifabei',application_slug:'__APPLICATION_SLUG__',module_key:moduleKey,page_key:pageKey,page_name:'__MODULE_NAME__列表',route:location.pathname,entity_type:moduleKey,entity_id:null,filters:{},selection:{},data_version:null},'*')}
+function bridgeOrigin(){try{const origin=new URL(document.referrer).origin;return origin.startsWith('https://')?origin:null}catch{return null}}
+function sendToBridge(message){const target=bridgeOrigin();if(target&&parent!==window)parent.postMessage(message,target)}
+function sendContext(){sendToBridge({type:'zhuojian:context',version:1,enterprise_key:'aifabei',application_slug:'__APPLICATION_SLUG__',module_key:moduleKey,page_key:pageKey,page_name:'__MODULE_NAME__列表',route:location.pathname,entity_type:moduleKey,entity_id:null,filters:{},selection:{},data_version:null})}
 function render(items){document.getElementById('status').textContent=`共 ${items.length} 条`;document.getElementById('records').innerHTML=items.map(x=>`<div class="card"><strong>${x.id}</strong><div class="muted">状态 ${x.status} · 版本 ${x.version}</div><pre>${JSON.stringify(x,null,2)}</pre></div>`).join('')||'<div class="card muted">暂无数据，可让业务 AI 按真实需求补齐页面表单。</div>'}
 async function load(){sendContext();document.getElementById('status').textContent='正在读取业务数据…';try{const r=await fetch(`/api/ui/actions/${moduleKey}.query`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({pageKey,params:{}})});const body=await r.json();if(!r.ok)throw new Error(body.detail||`HTTP ${r.status}`);render(body.items||[])}catch(e){document.getElementById('status').innerHTML=`<span class="error">${e.message}</span>`}}
-document.getElementById('refresh').onclick=load;window.addEventListener('load',()=>{parent.postMessage({type:'zhuojian:ready',version:1},'*');load()});
+document.getElementById('refresh').onclick=load;window.addEventListener('load',()=>{sendToBridge({type:'zhuojian:ready',version:1});load()});
 </script></body></html>

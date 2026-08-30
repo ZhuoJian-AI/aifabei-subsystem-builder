@@ -123,7 +123,7 @@ Action JWT 使用 `typ=zhuojian-action`，至少包含用户、企业、部门�
 
 ## 页面上下文和 AI 工具
 
-iframe 在模块、页面、实体、筛选或选中项变化后发送：
+iframe 在模块、页面、实体、筛选或选中项变化后发送。`postMessage` 的 `targetOrigin` 必须从 `document.referrer` 解析并验证为 HTTPS 灼见父页面来源，或使用服务器下发的同等白名单；禁止使用 `"*"`，也禁止把来源值放进用户可控查询参数：
 
 ```json
 {
