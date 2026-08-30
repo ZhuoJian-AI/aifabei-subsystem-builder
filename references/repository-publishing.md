@@ -42,7 +42,7 @@ aifabei-chair-library
 
 ## 发布不变量
 
-1. 默认目标组织由灼见中央发布服务配置；企业环境只保存发布服务地址和本企业的 `ZHUOJIAN_PUBLISH_KEY`，不能覆盖 GitHub owner 或公司前缀。
+1. 默认目标组织由灼见中央发布服务配置；企业环境只保存发布服务地址和本企业的公司级发布凭证。管理员初始化时默认写入 `/etc/zhuojian/publisher.key` 并设置目录权限 `0700`、文件权限 `0600`；也可由受控运行环境通过 `ZHUOJIAN_PUBLISH_KEY` 注入。企业侧不能覆盖 GitHub owner 或公司前缀。
 2. 所有企业模块仓库默认 `private`。公开灼见平台参考源码不等于公开企业业务代码或数据。
 3. 创建前按完整仓库名查询。已存在则验证企业、模块和远程地址后更新；不得用 `-2`、`-new` 或版本后缀绕过重名。
 4. 仓库描述使用“企业名称 · 模块名称 · 灼见原生模块”，并添加 `company-{companySlug}`、`zhuojian-native-module`、`contract-v2` topics；验收仓库额外添加 `acceptance-test`。
@@ -63,7 +63,7 @@ aifabei-chair-library
     "repositoryPattern": "{companySlug}-{moduleSlug}",
     "publisher": "zhuojian-central",
     "publisherBaseUrl": "https://ai-platform.staging.zhuojianai.com",
-    "publisherCredentialRef": "ZHUOJIAN_PUBLISH_KEY"
+    "publisherCredentialRef": "/etc/zhuojian/publisher.key"
   }
 }
 ```

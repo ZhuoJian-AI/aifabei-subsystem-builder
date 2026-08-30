@@ -71,7 +71,7 @@ python <skill>/scripts/e2e_acceptance.py --base-url https://<模块域名> --mod
 python <skill>/scripts/publish_subsystem.py --path <模块项目目录>
 ```
 
-脚本从环境读取 `ZHUOJIAN_PLATFORM_URL` 和企业级 `ZHUOJIAN_PUBLISH_KEY`，不要求业务用户登录 GitHub；它自动查找或创建规范仓库并推送当前提交。缺少公司环境档案或发布凭证时停在“等待管理员首次初始化”，不得向用户索要 GitHub 账号或把组织私钥复制到 ECS。
+脚本读取 `ZHUOJIAN_PLATFORM_URL`，并优先读取环境变量 `ZHUOJIAN_PUBLISH_KEY`；未设置时自动读取管理员一次性安装到 `/etc/zhuojian/publisher.key` 的企业级发布凭证。业务用户不需要登录 GitHub，脚本会自动查找或创建规范仓库并推送当前提交。管理员只在每家公司首次初始化时安装一次凭证，之后该公司的新模块和更新都不再要求管理员参与。缺少公司环境档案或发布凭证时停在“等待管理员首次初始化”，不得向用户索要 GitHub 账号或把 GitHub App 私钥复制到 ECS。
 
 接入密钥只通过环境变量或交互式隐藏输入传递，绝不写入命令参数、仓库、日志或回复。管理员可在灼见“接入模块系统”向导登记；已有安全管理员 Token 时，也可运行 `scripts/register_subsystem.py --help` 自动完成发现、创建和同步。业务 AI 不自行授予部门权限。
 

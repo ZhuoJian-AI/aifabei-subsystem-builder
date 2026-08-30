@@ -45,9 +45,9 @@
     "repositoryPattern": "{companySlug}-{moduleSlug}",
     "publisher": "zhuojian-central",
     "publisherBaseUrl": "https://ai-platform.staging.zhuojianai.com",
-    "publisherCredentialRef": "ZHUOJIAN_PUBLISH_KEY"
+    "publisherCredentialRef": "/etc/zhuojian/publisher.key"
   },
-  "secretRefs": ["ZHUOJIAN_INTEGRATION_SECRET", "ZHUOJIAN_PUBLISH_KEY", "SESSION_SECRET"],
+  "secretRefs": ["ZHUOJIAN_INTEGRATION_SECRET", "/etc/zhuojian/publisher.key", "SESSION_SECRET"],
   "platformBindings": ["ZHUOJIAN_ORGANIZATION_ID"],
   "verifiedAt": "<RFC3339>"
 }

@@ -15,6 +15,9 @@ import urllib.request
 from pathlib import Path
 
 
+DEFAULT_PUBLISH_KEY_FILE = Path("/etc/zhuojian/publisher.key")
+
+
 def run_git(root: Path, *args: str, env: dict[str, str] | None = None) -> str:
     process = subprocess.run(
         ["git", *args],
@@ -33,6 +36,21 @@ def run_git(root: Path, *args: str, env: dict[str, str] | None = None) -> str:
 
 def normalized_remote(value: str) -> str:
     return value.strip().removesuffix(".git").rstrip("/").lower()
+
+
+def load_publish_key() -> str:
+    direct = os.environ.get("ZHUOJIAN_PUBLISH_KEY", "").strip()
+    if direct:
+        return direct
+    key_path = Path(
+        os.environ.get("ZHUOJIAN_PUBLISH_KEY_FILE", str(DEFAULT_PUBLISH_KEY_FILE))
+    ).expanduser()
+    try:
+        return key_path.read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        return ""
+    except OSError as exc:
+        raise RuntimeError(f"无法读取公司发布凭证文件：{key_path}") from exc
 
 
 def provision(platform_url: str, publish_key: str, module_slug: str, module_name: str) -> dict:
@@ -76,9 +94,12 @@ def main() -> int:
         parser.error("项目必须包含 subsystem.json 和本地 Git 仓库")
     if not args.platform_url.strip():
         parser.error("缺少 ZHUOJIAN_PLATFORM_URL")
-    publish_key = os.environ.get("ZHUOJIAN_PUBLISH_KEY", "").strip()
+    publish_key = load_publish_key()
     if not publish_key:
-        parser.error("缺少 ZHUOJIAN_PUBLISH_KEY；请先完成公司环境初始化")
+        parser.error(
+            "缺少公司发布凭证；请先完成公司环境初始化（环境变量 ZHUOJIAN_PUBLISH_KEY "
+            "或 /etc/zhuojian/publisher.key）"
+        )
 
     config = json.loads(config_path.read_text(encoding="utf-8"))
     module_slug = str(config.get("applicationSlug") or "").strip()
