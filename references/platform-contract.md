@@ -1,4 +1,4 @@
-# 灼见原生模块接入协议 v2.1
+# 灼见原生模块接入协议 v2.2
 
 `version` 始终是整数 `2`；兼容增强写入字符串 `contractRevision`。平台必须兼容没有 `contractRevision` 和 `pages` 的 v2.0 模块。
 
@@ -9,6 +9,7 @@
 - `moduleKey`：子模块及最小授权单位；每个子模块恰好一个 owner 部门。
 - `pageKey`：子模块内稳定页面/工作上下文。
 - `actionKey`：系统内全局唯一业务命令。
+- `departments[].pageKeys/actionKeys`：该参与部门建议获得的页面和操作上限；平台管理员或企业管理员确认后才形成实际授权。
 - 稳定标识仅使用小写字母、数字、点、下划线和短横线，不随显示文案变化。
 
 ## 固定端点
@@ -32,7 +33,7 @@
 {
   "protocol": "zhuojian-subsystem",
   "version": 2,
-  "contractRevision": "2.1",
+  "contractRevision": "2.2",
   "enterprise": {"key": "aifabei", "name": "爱法贝"},
   "applicationSlug": "sample-review",
   "applicationName": "样品评审系统",
@@ -45,9 +46,9 @@
     "name": "样品评审",
     "route": "/sample-review",
     "departments": [
-      {"key": "design", "name": "设计部", "role": "owner"},
-      {"key": "production", "name": "生产部", "role": "collaborator"},
-      {"key": "quality", "name": "质量部", "role": "approver"}
+      {"key": "design", "name": "设计部", "role": "owner", "pageKeys": ["sample_review.list"], "actionKeys": ["sample_review.query", "sample_review.create", "sample_review.update", "sample_review.delete", "sample_review.approve", "sample_review.export"]},
+      {"key": "production", "name": "生产部", "role": "collaborator", "pageKeys": ["sample_review.list"], "actionKeys": ["sample_review.query", "sample_review.update"]},
+      {"key": "quality", "name": "质量部", "role": "approver", "pageKeys": ["sample_review.list"], "actionKeys": ["sample_review.query", "sample_review.approve", "sample_review.export"]}
     ],
     "pages": [{
       "pageKey": "sample_review.list",
@@ -77,7 +78,7 @@
 }
 ```
 
-完整结构以 `schemas/manifest-v2.schema.json` 为准。同步新增页面、Action 和事件时只登记为“待授权”；删除 Action 时平台停用目录项，不自动扩权。
+完整结构以 `schemas/manifest-v2.schema.json` 为准。部门声明是接入向导中的建议授权上限，不是模块自行颁发的权限；管理员确认后才生效。同步新增页面、Action 和事件时只登记为“待授权”；删除 Action 时平台停用目录项，不自动扩权。
 
 ## 双层鉴权
 

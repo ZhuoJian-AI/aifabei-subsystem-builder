@@ -56,8 +56,8 @@ def main() -> int:
         raise SystemExit("清单缺少字段：" + "、".join(missing))
     if manifest.get("protocol") != "zhuojian-subsystem" or manifest.get("version") != 2:
         raise SystemExit("清单必须使用 zhuojian-subsystem version 2。")
-    if manifest.get("contractRevision") != "2.1":
-        raise SystemExit("冷启动验收要求 contractRevision=2.1。")
+    if manifest.get("contractRevision") != "2.2":
+        raise SystemExit("冷启动验收要求 contractRevision=2.2。")
     enterprise = manifest.get("enterprise")
     if not isinstance(enterprise, dict) or not enterprise.get("key") or not enterprise.get("name"):
         raise SystemExit("清单 enterprise 必须包含稳定 key 和 name。")
@@ -106,6 +106,8 @@ def main() -> int:
         for department_index, department in enumerate(departments):
             if not isinstance(department, dict) or not all(department.get(key) for key in ("key", "name", "role")):
                 raise SystemExit(f"{label}.departments[{department_index}] 必须包含 key/name/role。")
+            if not isinstance(department.get("actionKeys"), list) or not isinstance(department.get("pageKeys"), list):
+                raise SystemExit(f"{label}.departments[{department_index}] 必须声明 actionKeys/pageKeys。")
             key = str(department["key"])
             if not STABLE_KEY_RE.fullmatch(key) or key in local_departments:
                 raise SystemExit(f"{label} 的部门 key 格式无效或重复：{key}")
@@ -139,6 +141,7 @@ def main() -> int:
         if not isinstance(pages, list) or not pages:
             raise SystemExit(f"{label}.pages 必须是非空列表。")
         module_action_keys = {str(item["actionKey"]) for item in actions}
+        module_page_keys: set[str] = set()
         for page_index, page in enumerate(pages):
             page_label = f"{label}.pages[{page_index}]"
             required_page = ("pageKey", "name", "routePattern", "actionKeys", "contextSchema")
@@ -148,6 +151,7 @@ def main() -> int:
             if not STABLE_KEY_RE.fullmatch(page_key) or page_key in page_keys:
                 raise SystemExit(f"pageKey 格式无效或重复：{page_key}")
             page_keys.add(page_key)
+            module_page_keys.add(page_key)
             route_pattern = str(page["routePattern"])
             parsed_page_route = urlsplit(route_pattern)
             if not route_pattern.startswith("/") or route_pattern.startswith("//") or parsed_page_route.scheme or parsed_page_route.netloc:
@@ -158,6 +162,11 @@ def main() -> int:
                 raise SystemExit(f"{page_label}.queryActionKey 必须出现在 actionKeys 中。")
             if not isinstance(page["contextSchema"], dict):
                 raise SystemExit(f"{page_label}.contextSchema 必须是对象。")
+        for department_index, department in enumerate(departments):
+            if any(str(key) not in module_action_keys for key in department["actionKeys"]):
+                raise SystemExit(f"{label}.departments[{department_index}].actionKeys 引用了本子模块不存在的操作。")
+            if any(str(key) not in module_page_keys for key in department["pageKeys"]):
+                raise SystemExit(f"{label}.departments[{department_index}].pageKeys 引用了本子模块不存在的页面。")
 
     print(
         f"接入验证通过：健康状态 {health.get('status', 'ok')}，企业 {enterprise['name']}，"

@@ -68,10 +68,23 @@ def main() -> int:
         "inputSchema": {"type": "object", "properties": {}},
         "resultSchema": {"type": "object"},
     } for operation, confirm in actions]
+    page_key = f"{module_key}.list"
+    role_operations = {
+        "owner": {"query", "create", "update", "delete", "approve", "export"},
+        "collaborator": {"query", "create", "update", "export"},
+        "approver": {"query", "approve", "export"},
+        "consumer": {"query", "export"},
+    }
+    for item in departments:
+        item["pageKeys"] = [page_key]
+        item["actionKeys"] = [
+            row["actionKey"] for row in action_rows
+            if row["operation"] in role_operations[item["role"]]
+        ]
     config = {
         "protocol": "zhuojian-subsystem",
         "version": 2,
-        "contractRevision": "2.1",
+        "contractRevision": "2.2",
         "enterprise": {"key": "aifabei", "name": "爱法贝"},
         "applicationSlug": application_slug,
         "applicationName": args.application_name.strip(),
@@ -85,14 +98,14 @@ def main() -> int:
             "route": f"/{module_key.replace('_', '-')}",
             "departments": departments,
             "pages": [{
-                "pageKey": f"{module_key}.list",
+                "pageKey": page_key,
                 "name": f"{args.module_name}列表",
                 "routePattern": f"/{module_key.replace('_', '-')}",
                 "queryActionKey": f"{module_key}.query",
                 "actionKeys": [row["actionKey"] for row in action_rows],
                 "contextSchema": {"type": "object", "properties": {
                     "filters": {"type": "object"}, "selection": {"type": "object"},
-                    "entity_id": {"type": ["string", "null"]}, "data_version": {"type": ["string", "null"]},
+                    "entity_id": {"type": ["string", "null"]}, "data_version": {"type": ["integer", "string", "null"]},
                 }},
             }],
             "actions": action_rows,
