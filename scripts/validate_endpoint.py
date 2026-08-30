@@ -78,6 +78,13 @@ def main() -> int:
     events = get_json(f"{events_url}?{urlencode({'after': 0, 'limit': 1})}", token)
     if not all(key in events for key in ("items", "nextAfter", "hasMore")):
         raise SystemExit("事件接口缺少 items/nextAfter/hasMore。")
+    event_items = events.get("items")
+    if not isinstance(event_items, list):
+        raise SystemExit("事件接口 items 必须是数组。")
+    if event_items:
+        sequence = event_items[0].get("sequence") if isinstance(event_items[0], dict) else None
+        if not isinstance(sequence, int) or sequence < 1_000_000_000_000:
+            raise SystemExit("事件 sequence 必须使用跨数据库重建不回退的全局单调序列，不能从 1 重新开始。")
 
     modules = manifest.get("modules")
     if not isinstance(modules, list) or not modules:

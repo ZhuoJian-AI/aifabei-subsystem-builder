@@ -5,6 +5,7 @@ import hmac
 import json
 import os
 import sqlite3
+import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -152,9 +153,15 @@ def required_permission(operation: str) -> str:
 
 
 def emit_event(connection: sqlite3.Connection, module_key: str, event_type: str, entity_id: str, payload: dict) -> None:
+    # The SaaS cursor survives container/database replacement.  A local
+    # AUTOINCREMENT that restarts at 1 can therefore hide new events behind an
+    # older cursor.  Epoch-microseconds stay below JavaScript's safe-integer
+    # ceiling and remain monotonic inside this outbox transaction.
+    previous = connection.execute("SELECT COALESCE(MAX(sequence), 0) FROM outbox").fetchone()[0]
+    sequence = max(time.time_ns() // 1_000, int(previous) + 1)
     connection.execute(
-        "INSERT INTO outbox(event_id,event_type,module_key,entity_type,entity_id,occurred_at,payload) VALUES(?,?,?,?,?,?,?)",
-        (uuid4().hex, event_type, module_key, module_key, entity_id, datetime.now(timezone.utc).isoformat(), json.dumps(payload, ensure_ascii=False)),
+        "INSERT INTO outbox(sequence,event_id,event_type,module_key,entity_type,entity_id,occurred_at,payload) VALUES(?,?,?,?,?,?,?,?)",
+        (sequence, uuid4().hex, event_type, module_key, module_key, entity_id, datetime.now(timezone.utc).isoformat(), json.dumps(payload, ensure_ascii=False)),
     )
 
 

@@ -48,7 +48,7 @@ description: "让管理员 AI 初始化爱法贝企业开发环境，让业务 A
 - 查询、新增、修改、删除、导出统一走 Action。修改和删除使用 `expectedVersion`；版本冲突返回 HTTP 409。
 - 高风险操作声明 `requiresConfirmation=true`，校验灼见确认声明、参数哈希和幂等 `requestId`；拒绝、过期和重复批准不得重复执行。
 - iframe Bridge 只发送当前页面和选中实体的摘要，不传 Token、Cookie、密码或整表数据；`postMessage` 的 `targetOrigin` 必须取经 HTTPS 校验的灼见父页面来源，禁止使用 `"*"`。
-- 跨系统数据流使用版本化事件；目标系统按 `eventId` 幂等消费，不共享数据库。
+- 跨系统数据流使用版本化事件；目标系统按 `eventId` 幂等消费，不共享数据库。事件 `sequence` 必须跨容器/数据库重建仍单调不回退，禁止从 1 重新开始的裸自增游标；按 `references/platform-contract.md` 使用 Unix 微秒序列。
 - 生产镜像只安装运行时依赖，测试与 Playwright 依赖必须拆到开发依赖文件；Dockerfile 自带 `/health` 检查时，管理员配置 Coolify 保留镜像检查，禁止用不存在的 `curl/wget` 覆盖。
 
 ## 部署与登记
