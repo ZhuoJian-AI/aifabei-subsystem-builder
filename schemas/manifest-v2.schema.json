@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zhuojianai.com/schemas/subsystem/manifest-v2.schema.json",
+  "title": "ZhuoJian subsystem manifest v2.1",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["protocol", "version", "enterprise", "applicationSlug", "applicationName", "eventsUrl", "eventDeliveriesUrl", "auth", "modules"],
+  "properties": {
+    "protocol": {"const": "zhuojian-subsystem"},
+    "version": {"const": 2},
+    "contractRevision": {"type": "string", "pattern": "^2\\.[0-9]+$"},
+    "enterprise": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["key", "name"],
+      "properties": {"key": {"$ref": "#/$defs/stableKey"}, "name": {"type": "string", "minLength": 1, "maxLength": 255}}
+    },
+    "applicationSlug": {"$ref": "#/$defs/stableKey"},
+    "applicationName": {"type": "string", "minLength": 1, "maxLength": 255},
+    "bridgeVersion": {"const": 1},
+    "eventsUrl": {"$ref": "#/$defs/sitePath"},
+    "eventDeliveriesUrl": {"const": "/api/integration/event-deliveries"},
+    "auth": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ssoPath", "algorithm"],
+      "properties": {"ssoPath": {"const": "/api/integration/sso"}, "algorithm": {"const": "HS256"}}
+    },
+    "modules": {"type": "array", "minItems": 1, "maxItems": 500, "items": {"$ref": "#/$defs/module"}}
+  },
+  "$defs": {
+    "stableKey": {"type": "string", "minLength": 1, "maxLength": 160, "pattern": "^[a-z0-9][a-z0-9._-]*$"},
+    "sitePath": {"type": "string", "pattern": "^/(?!/).*$", "maxLength": 2000},
+    "schema": {"type": "object"},
+    "department": {
+      "type": "object", "additionalProperties": true, "required": ["key", "name", "role"],
+      "properties": {"key": {"$ref": "#/$defs/stableKey"}, "name": {"type": "string", "minLength": 1}, "role": {"enum": ["owner", "collaborator", "approver", "consumer"]}}
+    },
+    "page": {
+      "type": "object", "additionalProperties": true,
+      "required": ["pageKey", "name", "routePattern", "actionKeys", "contextSchema"],
+      "properties": {
+        "pageKey": {"$ref": "#/$defs/stableKey"}, "name": {"type": "string", "minLength": 1},
+        "routePattern": {"$ref": "#/$defs/sitePath"}, "queryActionKey": {"$ref": "#/$defs/stableKey"},
+        "actionKeys": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/stableKey"}},
+        "contextSchema": {"$ref": "#/$defs/schema"}
+      }
+    },
+    "action": {
+      "type": "object", "additionalProperties": true,
+      "required": ["actionKey", "name", "operation", "aiEnabled", "requiresConfirmation", "inputSchema", "resultSchema"],
+      "properties": {
+        "actionKey": {"$ref": "#/$defs/stableKey"}, "name": {"type": "string", "minLength": 1}, "description": {"type": "string"},
+        "operation": {"enum": ["query", "create", "update", "delete", "export", "approve"]},
+        "aiEnabled": {"type": "boolean"}, "requiresConfirmation": {"type": "boolean"},
+        "inputSchema": {"$ref": "#/$defs/schema"}, "resultSchema": {"$ref": "#/$defs/schema"}
+      }
+    },
+    "events": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "publishes": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/stableKey"}},
+        "subscribes": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/stableKey"}}
+      }
+    },
+    "module": {
+      "type": "object", "additionalProperties": true,
+      "required": ["moduleKey", "name", "route", "departments", "pages", "actions"],
+      "properties": {
+        "moduleKey": {"$ref": "#/$defs/stableKey"}, "name": {"type": "string", "minLength": 1}, "route": {"$ref": "#/$defs/sitePath"},
+        "departments": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/department"}},
+        "pages": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/page"}},
+        "actions": {"type": "array", "items": {"$ref": "#/$defs/action"}},
+        "events": {"$ref": "#/$defs/events"}
+      },
+      "allOf": [{"$comment": "Semantic validator enforces exactly one owner and page action references."}]
+    }
+  }
+}

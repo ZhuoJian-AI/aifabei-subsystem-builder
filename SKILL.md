@@ -1,94 +1,75 @@
 ---
 name: aifabei-subsystem-builder
-description: "让爱法贝业务同事只描述需求，由 AI 新建、修改、部署或接入独立模块系统，并与灼见 SaaS v2 协议兼容。一个系统可包含多个子模块，每个子模块可由多个部门共同参与；页面按钮与 AI 共用操作接口。用户提到爱法贝模块、跨部门系统、ECS、内网部署、iframe 或灼见接入时使用。"
+description: "让管理员 AI 初始化爱法贝企业开发环境，让业务 AI 从业务描述新建、修改、部署或接入跨部门子模块，并与灼见 SaaS 原生协议兼容。用户提到爱法贝模块、企业 ECS、跨部门系统、AI CRUD、iframe 或灼见接入时使用。"
 ---
 
-# 爱法贝模块系统搭建
+# 爱法贝企业模块搭建
 
-用户只负责说清业务、参与部门和期望结果。不要让用户选择框架、写命令、配置 Docker、解释 iframe 或手工拼接口；这些由 AI 完成并用业务语言汇报。
+用户只需要说明业务、参与部门和期望结果。不要要求用户选择框架、写命令、配置 Docker、注册 GitHub 或手工拼接口；这些由 AI 完成，并用业务语言汇报。
 
-## 固定业务层级
-
-```text
-爱法贝企业
-└─ 模块系统（一个域名、一次部署）
-   └─ 多个子模块（moduleKey，最小授权单位）
-      └─ 多个参与部门及角色
-         └─ 页面、数据和操作
-```
-
-- 模块系统是独立仓库、域名、数据库和发布单元。
-- 子模块是灼见菜单、授权和 AI 操作的最小边界。
-- 每个子模块必须有且只有一个 `owner` 部门，可有多个协作、审批或使用部门。
-- 模块业务数据留在模块数据库；灼见只保存登记、授权、操作目录、事件游标和必要索引。
-
-## 执行入口
-
-按用户意图直接选择，不要求用户理解技术差异：
-
-1. **新建**：从业务描述建立最小可用系统。
-2. **修改**：原地修改现有系统，不覆盖业务代码或重建数据库。
-3. **接入**：补齐 v2 协议并部署，最后输出管理员接入回执。
-
-开始前读取全局与项目 `AGENTS.md`，再运行：
+## 固定架构
 
 ```text
-python <本 Skill 目录>/scripts/inspect_subsystem.py --path <仓库根目录>
+灼见 SaaS（中央控制面）
+└─ 爱法贝企业大模块（逻辑聚合）
+   └─ 模块系统（独立域名、仓库、数据库、发布单元）
+      └─ 子模块（moduleKey，最小授权边界）
+         └─ 页面、数据、AI Action、事件
+            └─ 一个 owner 部门 + 多个协作/审批/使用部门
 ```
 
-## 接入标准
+模块业务数据始终留在模块自己的数据库。灼见只保存登记、Manifest、授权、Action 目录、审计、事件游标和必要索引；禁止直接连接模块数据库。
 
-实施前读取 [平台接入 v2 协议](references/platform-contract.md)。系统必须提供：
+## 先选择执行模式
 
-- `GET /health`
-- `GET /api/integration/manifest`
-- `GET /api/integration/events`
-- `POST /api/integration/actions/{actionKey}`
-- `GET /api/integration/sso?ticket=...`
-- 页面上下文 `zhuojian:context` Bridge
+根据用户现状自动选择，不把技术判断抛给小白：
 
-关键规则：
+1. **管理员初始化**：用户提供新 ECS、云控制台或现有 Coolify 权限。读取 [管理员与服务器初始化](references/admin-bootstrap.md)，建立 Docker、远程部署、域名、HTTPS、安全规则和不含密钥的环境档案。
+2. **原生模块开发**：用户描述新业务。读取 [平台接入协议](references/platform-contract.md)，优先运行 `scripts/scaffold_subsystem.py` 建立标准骨架，再实现业务页面、数据库和 Action。
+3. **修改原生模块**：先运行 `scripts/inspect_subsystem.py`，保留数据和现有能力，以兼容方式升级 Manifest 与业务代码。
+4. **接入老系统**：只做 iframe、域名白名单和管理员授权；老系统未实现原生 SSO/Action 前，允许用户在 iframe 内额外登录一次，不伪装成已经打通数据。
 
-- 页面按钮与 AI 调用同一个业务命令处理器和权限校验。
-- `aiEnabled=false` 的操作不能提供给 AI。
-- 高风险操作标记 `requiresConfirmation=true`，由灼见取得用户确认后调用。
-- action 按 `requestId` 幂等；重复请求返回同一结果。
-- 模块同时验证企业、用户、部门、`moduleKey`、`actionKey` 和操作权限。
-- 不接受前端自行声明的身份；只信任灼见签发的短期票据。
-- iframe、事件和 action 不传整表数据，不直连其他模块数据库。
+## 开发前硬门槛
 
-## 部署判断
+- 读取全局与项目 `AGENTS.md`。
+- 新原生模块参考灼见公开源码 `https://github.com/ZhuoJian-AI/ai-platform`，记录参考提交；以本 Skill 的 Schema 和版本化契约为准，不依赖平台私有数据库结构。
+- 从空目录开发时先运行 `python <skill>/scripts/scaffold_subsystem.py --help`。
+- 已有项目先运行 `python <skill>/scripts/inspect_subsystem.py --path <项目根目录> --json`。
+- GitHub 不是业务用户前置条件。先在企业开发环境使用本地 Git；需要远程仓库时由管理员 AI 使用已授权的组织身份创建和推送。
 
-按 [ECS 与内网接入](references/ecs-first-access.md) 执行：
+## 原生模块必须满足
 
-- 公网 ECS：优先使用 Coolify，测试域名为 `{applicationSlug}.aifabei.staging.zhuojianai.com`，必须启用 HTTPS。
-- 同一 ECS 可部署多个模块系统；按域名路由到不同容器，不能为每个项目另买服务器。
-- 内网服务器：可以完成开发和本地部署，但没有经过授权的公网网关或隧道时，明确报告“等待网络接入”，不得声称已接入灼见。
-- root 密码只允许交互式隐藏输入，绝不写入文件、命令参数、日志或回复。已经公开过的密码视为失效。
+- 固定端点：`/health`、Manifest、事件拉取、事件投递、Action 和 SSO。
+- Manifest `version` 保持整数 `2`，新增能力用 `contractRevision` 表示；按 `schemas/manifest-v2.schema.json` 输出。
+- 每个子模块恰好一个 owner 部门；页面必须声明 `pageKey`、路由、上下文 Schema 和允许的 Action。
+- 页面按钮与 AI 调用同一个应用服务函数和权限判断。
+- AI 工具必须同时通过用户、企业、应用、子模块、页面、Action 和管理员授权；`aiEnabled=false` 永不暴露给 AI。
+- 查询、新增、修改、删除、导出统一走 Action。修改和删除使用 `expectedVersion`；版本冲突返回 HTTP 409。
+- 高风险操作声明 `requiresConfirmation=true`，校验灼见确认声明、参数哈希和幂等 `requestId`；拒绝、过期和重复批准不得重复执行。
+- iframe Bridge 只发送当前页面和选中实体的摘要，不传 Token、Cookie、密码或整表数据。
+- 跨系统数据流使用版本化事件；目标系统按 `eventId` 幂等消费，不共享数据库。
+
+## 部署与登记
+
+公网 ECS 按 [ECS 与内网接入](references/ecs-first-access.md) 执行。每个模块系统一个域名，同一 ECS 可按域名运行多个容器；子模块使用路径和 `moduleKey`，不单独购买服务器或域名。
+
+部署后依次运行：
+
+```text
+python <skill>/scripts/validate_endpoint.py --base-url https://<模块域名>
+python <skill>/scripts/e2e_acceptance.py --base-url https://<模块域名> --module-key <moduleKey> --page-key <pageKey> --query-action <actionKey>
+```
+
+接入密钥只通过环境变量或交互式隐藏输入传递，绝不写入命令参数、仓库、日志或回复。管理员可在灼见“接入模块系统”向导登记；已有安全管理员 Token 时，也可运行 `scripts/register_subsystem.py --help` 自动完成发现、创建和同步。业务 AI 不自行授予部门权限。
+
+## 失败处理
+
+- 模板或说明歧义：修本 Skill、Schema、模板或验证脚本，再从空目录重测。
+- 平台鉴权、Manifest、页面上下文、Action 或事件缺口：修 `ai-platform` 契约和测试，再重测。
+- DNS、HTTPS、反向代理或容器问题：修管理员初始化流程，不把服务器特例硬编码进业务代码。
+
+冷启动验收时禁止人工替业务 AI 补写业务代码。失败尝试保留报告，清理仅限本次带标签的隔离资源，然后换全新无上下文 AI 重跑。
 
 ## 管理员接入回执
 
-部署并通过验证后，只向用户输出以下业务回执，不要求管理员查看源码或数据库：
-
-```text
-模块系统：<名称>
-入口地址：https://<applicationSlug>.aifabei.staging.zhuojianai.com
-清单地址：https://<域名>/api/integration/manifest
-协议版本：2
-子模块：<moduleKey + 名称列表>
-参与部门：<部门 + 角色列表>
-AI 操作：<actionKey + 是否需确认列表>
-健康检查：通过/未通过
-连接密钥：已安全配置/等待管理员配置（绝不回显值）
-平台状态：等待管理员登记/已登记
-```
-
-Skill 不得自动登录灼见管理员后台、自动创建授权或推断部门映射。管理员在灼见“接入模块系统”向导中粘贴域名和连接密钥，核对模块及部门后确认登记。
-
-## 完成标准
-
-- 运行项目自身测试、构建、Compose 校验和健康检查。
-- 运行 `validate_endpoint.py`，确认 v2 清单、部门归属、操作 Schema 和事件游标。
-- 用真实浏览器验证页面、iframe、单点登录、同一页面操作和 AI 操作。
-- 高风险操作验证确认、拒绝、过期和重复批准。
-- 告诉业务用户：系统解决什么、谁参与、页面和 AI 能做什么、是否上线、还缺哪一项外部条件。
+最终只向业务用户输出：系统名称与入口、子模块、参与部门、页面、AI 操作及确认要求、健康状态、平台登记状态和尚缺外部条件。密钥只报告“已配置/待配置”，绝不回显值。

@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zhuojianai.com/schemas/subsystem/action-request-v2.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["requestId", "moduleKey", "pageKey", "operation", "params"],
+  "properties": {
+    "requestId": {"type": "string", "minLength": 8, "maxLength": 160},
+    "moduleKey": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]*$"},
+    "pageKey": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]*$"},
+    "operation": {"enum": ["query", "create", "update", "delete", "export"]},
+    "expectedVersion": {"type": ["string", "integer", "null"]},
+    "params": {"type": "object"}
+  }
+}

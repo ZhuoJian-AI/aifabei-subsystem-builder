@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zhuojianai.com/schemas/subsystem/event-delivery-v2.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["deliveryId", "sourceApplicationSlug", "event"],
+  "properties": {
+    "deliveryId": {"type": "string", "minLength": 8, "maxLength": 160},
+    "sourceApplicationSlug": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]*$"},
+    "event": {
+      "type": "object", "additionalProperties": true,
+      "required": ["eventId", "eventType", "enterpriseKey", "moduleKey", "entityType", "entityId", "occurredAt", "payload"],
+      "properties": {
+        "eventId": {"type": "string", "minLength": 8}, "eventType": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]*$"},
+        "enterpriseKey": {"type": "string"}, "moduleKey": {"type": "string"}, "entityType": {"type": "string"},
+        "entityId": {"type": "string"}, "occurredAt": {"type": "string", "format": "date-time"}, "payload": {"type": "object"}
+      }
+    }
+  }
+}

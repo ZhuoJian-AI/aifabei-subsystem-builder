@@ -47,12 +47,17 @@ def main() -> int:
     health = get_json(urljoin(base, "health"), token)
     manifest_url = urljoin(base, "api/integration/manifest")
     manifest = get_json(manifest_url, token)
-    required_manifest = ("protocol", "version", "enterprise", "applicationSlug", "eventsUrl", "auth", "modules")
+    required_manifest = (
+        "protocol", "version", "contractRevision", "enterprise", "applicationSlug",
+        "eventsUrl", "eventDeliveriesUrl", "auth", "modules",
+    )
     missing = [key for key in required_manifest if key not in manifest]
     if missing:
         raise SystemExit("清单缺少字段：" + "、".join(missing))
     if manifest.get("protocol") != "zhuojian-subsystem" or manifest.get("version") != 2:
         raise SystemExit("清单必须使用 zhuojian-subsystem version 2。")
+    if manifest.get("contractRevision") != "2.1":
+        raise SystemExit("冷启动验收要求 contractRevision=2.1。")
     enterprise = manifest.get("enterprise")
     if not isinstance(enterprise, dict) or not enterprise.get("key") or not enterprise.get("name"):
         raise SystemExit("清单 enterprise 必须包含稳定 key 和 name。")
@@ -67,6 +72,9 @@ def main() -> int:
     events_url = urljoin(manifest_url, str(manifest["eventsUrl"]))
     if not same_origin(base, events_url):
         raise SystemExit("eventsUrl 必须与系统入口同源。")
+    delivery_url = urljoin(manifest_url, str(manifest["eventDeliveriesUrl"]))
+    if not same_origin(base, delivery_url) or urlsplit(delivery_url).path != "/api/integration/event-deliveries":
+        raise SystemExit("eventDeliveriesUrl 必须是同源固定端点 /api/integration/event-deliveries。")
     events = get_json(f"{events_url}?{urlencode({'after': 0, 'limit': 1})}", token)
     if not all(key in events for key in ("items", "nextAfter", "hasMore")):
         raise SystemExit("事件接口缺少 items/nextAfter/hasMore。")
@@ -76,6 +84,7 @@ def main() -> int:
         raise SystemExit("清单 modules 必须是非空列表。")
     module_keys: set[str] = set()
     action_keys: set[str] = set()
+    page_keys: set[str] = set()
     department_keys: set[str] = set()
     for index, module in enumerate(modules):
         label = f"modules[{index}]"
@@ -120,19 +129,42 @@ def main() -> int:
             if not STABLE_KEY_RE.fullmatch(key) or key in action_keys:
                 raise SystemExit(f"操作 actionKey 格式无效或重复：{key}")
             action_keys.add(key)
-            if action["operation"] not in {"query", "create", "update", "delete", "export"}:
+            if action["operation"] not in {"query", "create", "update", "delete", "export", "approve"}:
                 raise SystemExit(f"{action_label}.operation 不受支持。")
             if not isinstance(action["aiEnabled"], bool) or not isinstance(action["requiresConfirmation"], bool):
                 raise SystemExit(f"{action_label} 的 AI/确认标记必须是布尔值。")
             if not isinstance(action["inputSchema"], dict) or not isinstance(action["resultSchema"], dict):
                 raise SystemExit(f"{action_label} 的输入输出 Schema 必须是对象。")
+        pages = module.get("pages")
+        if not isinstance(pages, list) or not pages:
+            raise SystemExit(f"{label}.pages 必须是非空列表。")
+        module_action_keys = {str(item["actionKey"]) for item in actions}
+        for page_index, page in enumerate(pages):
+            page_label = f"{label}.pages[{page_index}]"
+            required_page = ("pageKey", "name", "routePattern", "actionKeys", "contextSchema")
+            if not isinstance(page, dict) or any(key not in page for key in required_page):
+                raise SystemExit(f"{page_label} 缺少页面目录字段。")
+            page_key = str(page["pageKey"])
+            if not STABLE_KEY_RE.fullmatch(page_key) or page_key in page_keys:
+                raise SystemExit(f"pageKey 格式无效或重复：{page_key}")
+            page_keys.add(page_key)
+            route_pattern = str(page["routePattern"])
+            parsed_page_route = urlsplit(route_pattern)
+            if not route_pattern.startswith("/") or route_pattern.startswith("//") or parsed_page_route.scheme or parsed_page_route.netloc:
+                raise SystemExit(f"{page_label}.routePattern 必须是站内相对路径。")
+            if not isinstance(page["actionKeys"], list) or any(str(key) not in module_action_keys for key in page["actionKeys"]):
+                raise SystemExit(f"{page_label}.actionKeys 引用了本子模块不存在的操作。")
+            if page.get("queryActionKey") and page["queryActionKey"] not in page["actionKeys"]:
+                raise SystemExit(f"{page_label}.queryActionKey 必须出现在 actionKeys 中。")
+            if not isinstance(page["contextSchema"], dict):
+                raise SystemExit(f"{page_label}.contextSchema 必须是对象。")
 
     print(
         f"接入验证通过：健康状态 {health.get('status', 'ok')}，企业 {enterprise['name']}，"
         f"系统 {manifest['applicationSlug']}，子模块 {len(modules)} 个，"
-        f"参与部门 {len(department_keys)} 个，操作 {len(action_keys)} 个。"
+        f"参与部门 {len(department_keys)} 个，页面 {len(page_keys)} 个，操作 {len(action_keys)} 个。"
     )
-    print("Token 未输出；SSO 和 action 只做结构校验，不执行真实业务操作。")
+    print("Token 未输出；需要执行 SSO、页面感知 Action 和事件投递时继续运行 e2e_acceptance.py。")
     return 0
 
 
