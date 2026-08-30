@@ -8,6 +8,7 @@
 - 凭据只能通过受控会话、Secret 管理或交互式隐藏输入使用；环境档案、Git、日志和回复不得出现密码、Token 或私钥。
 - 默认保留服务器上全部既有容器、虚拟主机、数据库和数据卷。新资源使用唯一 `zhuojian-<enterprise>-<application>` 标签。
 - 管理员 AI 只建立底座和发布入口，不替业务 AI 编写业务流程。
+- 远程仓库与发布身份按 [仓库命名与自动发布](repository-publishing.md) 配置；业务用户和业务 AI 不需要 GitHub 账号。
 
 ## 初始化流程
 
@@ -37,6 +38,13 @@
   "domains": {"suffix": "aifabei.staging.zhuojianai.com", "httpsRequired": true},
   "capabilities": {"docker": true, "compose": true, "persistentVolumes": true},
   "network": {"publicPorts": [80, 443], "privateServicePortsOnly": true},
+  "sourceControl": {
+    "provider": "github",
+    "owner": "ZhuoJian-AI",
+    "visibility": "private",
+    "repositoryPattern": "{companySlug}-{moduleSlug}",
+    "publisher": "admin-service"
+  },
   "secretRefs": ["ZHUOJIAN_INTEGRATION_SECRET", "SESSION_SECRET"],
   "platformBindings": ["ZHUOJIAN_ORGANIZATION_ID"],
   "verifiedAt": "<RFC3339>"

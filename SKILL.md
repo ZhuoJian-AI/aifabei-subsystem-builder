@@ -24,7 +24,7 @@ description: "让管理员 AI 初始化爱法贝企业开发环境，让业务 A
 
 根据用户现状自动选择，不把技术判断抛给小白：
 
-1. **管理员初始化**：用户提供新 ECS、云控制台或现有 Coolify 权限。读取 [管理员与服务器初始化](references/admin-bootstrap.md)，建立 Docker、远程部署、域名、HTTPS、安全规则和不含密钥的环境档案。
+1. **管理员初始化**：用户提供新 ECS、云控制台或现有 Coolify 权限。读取 [管理员与服务器初始化](references/admin-bootstrap.md)，建立 Docker、远程部署、域名、HTTPS、安全规则和不含密钥的环境档案；创建远程仓库或发布代码时还必须读取 [仓库命名与自动发布](references/repository-publishing.md)。
 2. **原生模块开发**：用户描述新业务。读取 [平台接入协议](references/platform-contract.md)，优先运行 `scripts/scaffold_subsystem.py` 建立标准骨架，再实现业务页面、数据库和 Action。
 3. **修改原生模块**：先运行 `scripts/inspect_subsystem.py`，保留数据和现有能力，以兼容方式升级 Manifest 与业务代码。
 4. **接入老系统**：只做 iframe、域名白名单和管理员授权；老系统未实现原生 SSO/Action 前，允许用户在 iframe 内额外登录一次，不伪装成已经打通数据。
@@ -35,7 +35,7 @@ description: "让管理员 AI 初始化爱法贝企业开发环境，让业务 A
 - 新原生模块参考灼见公开源码 `https://github.com/ZhuoJian-AI/ai-platform`，记录参考提交；以本 Skill 的 Schema 和版本化契约为准，不依赖平台私有数据库结构。
 - 从空目录开发时先运行 `python <skill>/scripts/scaffold_subsystem.py --help`。
 - 已有项目先运行 `python <skill>/scripts/inspect_subsystem.py --path <项目根目录> --json`。
-- GitHub 不是业务用户前置条件。先在企业开发环境使用本地 Git；需要远程仓库时由管理员 AI 使用已授权的组织身份创建和推送。
+- GitHub 不是业务用户前置条件。业务 AI 只使用本地 Git 并输出 `companySlug`、`moduleSlug` 和建议仓库名；创建私有仓库、推送和绑定 Coolify 由管理员 AI 或灼见发布服务使用机器身份完成，规则见 [仓库命名与自动发布](references/repository-publishing.md)。
 
 ## 原生模块必须满足
 
@@ -54,6 +54,8 @@ description: "让管理员 AI 初始化爱法贝企业开发环境，让业务 A
 ## 部署与登记
 
 公网 ECS 按 [ECS 与内网接入](references/ecs-first-access.md) 执行。每个模块系统一个域名，同一 ECS 可按域名运行多个容器；子模块使用路径和 `moduleKey`，不单独购买服务器或域名。
+
+正式仓库名固定为 `{companySlug}-{moduleSlug}`。爱法贝示例为 `aifabei-sample-review`；公司标识只在仓库名前出现一次，正式名称不得携带版本、日期、环境或 `coldstart`。验收仓库才允许 `{companySlug}-{moduleSlug}-coldstart-v{n}`，且必须标记为测试资源。不要因为升级创建 `-v2` 新仓库，版本使用 Git commit、tag 和 Manifest `contractRevision` 表达。
 
 部署后依次运行：
 

@@ -1,6 +1,6 @@
 # __APPLICATION_NAME__
 
-灼见原生模块骨架，应用标识 `__APPLICATION_SLUG__`，子模块 `__MODULE_KEY__`。
+灼见原生模块骨架，应用标识 `__APPLICATION_SLUG__`，子模块 `__MODULE_KEY__`，建议私有仓库名 `__REPOSITORY_NAME__`。
 
 1. 根据真实业务修改 `subsystem.json`、`app.py` 和页面。
 2. 复制 `.env.example` 为本机 `.env`，填入随机 Secret；不得提交 `.env`。

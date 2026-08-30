@@ -10,12 +10,20 @@ import shutil
 from pathlib import Path
 
 KEY_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
+REPOSITORY_PART_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 
 
 def stable(value: str, label: str) -> str:
     value = value.strip()
     if not KEY_RE.fullmatch(value):
         raise argparse.ArgumentTypeError(f"{label} 必须是小写稳定标识")
+    return value
+
+
+def repository_part(value: str, label: str) -> str:
+    value = value.strip()
+    if not REPOSITORY_PART_RE.fullmatch(value):
+        raise argparse.ArgumentTypeError(f"{label} 只允许小写字母、数字和单连字符")
     return value
 
 
@@ -29,6 +37,8 @@ def department(value: str) -> dict[str, str]:
 def main() -> int:
     parser = argparse.ArgumentParser(description="建立灼见原生模块系统骨架")
     parser.add_argument("--output", required=True, help="新的项目目录，必须为空或不存在")
+    parser.add_argument("--company-slug", default="aifabei", help="企业稳定英文标识，默认 aifabei")
+    parser.add_argument("--company-name", default="爱法贝", help="企业显示名称，默认爱法贝")
     parser.add_argument("--application-slug", required=True)
     parser.add_argument("--application-name", required=True)
     parser.add_argument("--module-key", required=True)
@@ -36,7 +46,14 @@ def main() -> int:
     parser.add_argument("--department", action="append", default=[], help="可重复：key:显示名:role")
     args = parser.parse_args()
 
-    application_slug = stable(args.application_slug, "applicationSlug")
+    try:
+        company_slug = repository_part(args.company_slug, "companySlug")
+        application_slug = repository_part(args.application_slug, "applicationSlug")
+    except argparse.ArgumentTypeError as exc:
+        parser.error(str(exc))
+    if application_slug == company_slug or application_slug.startswith(f"{company_slug}-"):
+        parser.error("applicationSlug 不得重复 companySlug 前缀；仓库名会自动添加企业前缀")
+    repository_name = f"{company_slug}-{application_slug}"
     module_key = stable(args.module_key, "moduleKey")
     departments = [department(item) for item in args.department]
     if not departments:
@@ -85,7 +102,7 @@ def main() -> int:
         "protocol": "zhuojian-subsystem",
         "version": 2,
         "contractRevision": "2.3",
-        "enterprise": {"key": "aifabei", "name": "爱法贝"},
+        "enterprise": {"key": company_slug, "name": args.company_name.strip()},
         "applicationSlug": application_slug,
         "applicationName": args.application_name.strip(),
         "bridgeVersion": 1,
@@ -116,6 +133,7 @@ def main() -> int:
     replacements = {
         "__APPLICATION_NAME__": args.application_name.strip(),
         "__APPLICATION_SLUG__": application_slug,
+        "__REPOSITORY_NAME__": repository_name,
         "__MODULE_NAME__": args.module_name.strip(),
         "__MODULE_KEY__": module_key,
     }
@@ -125,7 +143,14 @@ def main() -> int:
         for old, new in replacements.items():
             content = content.replace(old, new)
         path.write_text(content, encoding="utf-8")
-    print(json.dumps({"status": "created", "path": str(output), "applicationSlug": application_slug, "moduleKey": module_key}, ensure_ascii=False))
+    print(json.dumps({
+        "status": "created",
+        "path": str(output),
+        "companySlug": company_slug,
+        "applicationSlug": application_slug,
+        "suggestedRepositoryName": repository_name,
+        "moduleKey": module_key,
+    }, ensure_ascii=False))
     print("下一步：实现真实字段和流程，运行项目测试，再执行 validate_endpoint.py 与 e2e_acceptance.py。")
     return 0
 
