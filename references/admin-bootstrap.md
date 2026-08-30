@@ -18,6 +18,13 @@
 5. 建立 HTTPS 和 Host 路由，验证两个不同域名不会进入同一容器。不得用本机 hosts 文件冒充 DNS 完成。
 6. 生成 `zhuojian-environment.json`，只写非敏感能力和标识；密钥写入 Coolify Secret/环境变量，由档案中的 `secretRefs` 引用名字。
 
+### Coolify 健康检查约束
+
+- 模块 Dockerfile 必须定义不依赖额外系统包的 `HEALTHCHECK`，推荐使用项目运行时自带的 Python/Node 请求 `/health`。
+- Dockerfile 已有健康检查时，Coolify Application 设置 `health_check_enabled=false`，保留镜像检查；不要让 Coolify 用镜像里不存在的 `curl` 或 `wget` 覆盖它。
+- 如果明确启用 Coolify 健康检查，镜像必须实际包含它调用的命令，并在冷启动验收中从最终镜像内执行一次。
+- `requirements.txt`/生产镜像只放运行时依赖；pytest、Playwright、Schema 校验器等写入独立的开发依赖文件，不得把浏览器测试栈安装进小规格 ECS 的生产容器。
+
 ## 环境档案
 
 ```json
