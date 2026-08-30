@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import os
 import sqlite3
@@ -29,14 +30,18 @@ PAGES = {
     for module in MANIFEST["modules"] for page in module["pages"]
 }
 DB_PATH = os.getenv("DATABASE_PATH", str(ROOT / "subsystem.db"))
-INTEGRATION_SECRET = os.getenv("INTEGRATION_SECRET", "")
+INTEGRATION_SECRET = os.getenv("ZHUOJIAN_INTEGRATION_SECRET", "")
 SESSION_SECRET = os.getenv("SESSION_SECRET", "")
+EXPECTED_ORGANIZATION_ID = os.getenv("ZHUOJIAN_ORGANIZATION_ID", "")
 SAAS_ORIGINS = [item.strip() for item in os.getenv(
     "ZHUOJIAN_SAAS_ORIGINS", "https://ai-platform.staging.zhuojianai.com"
 ).split(",") if item.strip()]
 
-if len(INTEGRATION_SECRET) < 32 or len(SESSION_SECRET) < 32:
-    raise RuntimeError("INTEGRATION_SECRET and SESSION_SECRET must each contain at least 32 characters")
+if len(INTEGRATION_SECRET) < 32 or len(SESSION_SECRET) < 32 or not EXPECTED_ORGANIZATION_ID:
+    raise RuntimeError(
+        "ZHUOJIAN_INTEGRATION_SECRET and SESSION_SECRET must each contain at least 32 characters, "
+        "and ZHUOJIAN_ORGANIZATION_ID is required"
+    )
 
 app = FastAPI(title=MANIFEST["applicationName"], docs_url=None, redoc_url=None)
 app.add_middleware(
@@ -102,7 +107,7 @@ def bearer(authorization: str | None) -> str:
 
 
 def require_static_token(authorization: str | None) -> None:
-    if not hashlib.compare_digest(bearer(authorization), INTEGRATION_SECRET):
+    if not hmac.compare_digest(bearer(authorization), INTEGRATION_SECRET):
         raise HTTPException(401, "Invalid integration token")
 
 
@@ -113,6 +118,8 @@ def decode_jwt(token: str, expected_type: str) -> dict[str, Any]:
         raise HTTPException(401, "Invalid integration JWT") from exc
     if claims.get("iss") != "zhuojian-saas" or claims.get("typ") != expected_type:
         raise HTTPException(401, "Invalid integration JWT type")
+    if str(claims.get("organizationId") or "") != EXPECTED_ORGANIZATION_ID:
+        raise HTTPException(403, "Enterprise organization mismatch")
     return claims
 
 

@@ -57,12 +57,17 @@ def main() -> int:
     parser.add_argument("--module-key", required=True)
     parser.add_argument("--page-key", required=True)
     parser.add_argument("--query-action", required=True)
-    parser.add_argument("--token-env", default="ZHUOJIAN_SUBSYSTEM_TOKEN")
+    parser.add_argument("--token-env", default="ZHUOJIAN_INTEGRATION_SECRET")
     parser.add_argument("--secret-env", default="ZHUOJIAN_INTEGRATION_SECRET")
+    parser.add_argument("--organization-id-env", default="ZHUOJIAN_ORGANIZATION_ID")
     args = parser.parse_args()
     token, secret = os.getenv(args.token_env, ""), os.getenv(args.secret_env, "")
-    if not token or len(secret) < 32:
-        raise SystemExit(f"请通过 {args.token_env} 和 {args.secret_env} 环境变量提供静态 Token 与签名密钥。")
+    organization_id = os.getenv(args.organization_id_env, "")
+    if not token or len(secret) < 32 or not organization_id:
+        raise SystemExit(
+            f"请通过 {args.token_env}、{args.secret_env} 和 {args.organization_id_env} "
+            "提供模块接入凭证与真实企业 organization UUID。"
+        )
     base = args.base_url.rstrip("/") + "/"
     status, manifest = json_request(urljoin(base, "api/integration/manifest"), token=token)
     if status != 200:
@@ -78,7 +83,7 @@ def main() -> int:
     now, user_id = int(time.time()), f"acceptance-{uuid4().hex[:12]}"
     sso_claims = {
         "iss": "zhuojian-saas", "aud": manifest["applicationSlug"], "typ": "zhuojian-sso",
-        "sub": user_id, "organizationId": "acceptance-org", "departmentId": "acceptance-dept",
+        "sub": user_id, "organizationId": organization_id, "departmentId": "acceptance-dept",
         "teamId": None, "moduleKey": args.module_key, "permissions": ["view", "ai_query"],
         "jti": uuid4().hex, "iat": now, "exp": now + 60,
     }
@@ -90,7 +95,7 @@ def main() -> int:
     request_id = f"acceptance-query-{uuid4().hex}"
     action_claims = {
         "iss": "zhuojian-saas", "aud": manifest["applicationSlug"], "typ": "zhuojian-action",
-        "sub": user_id, "organizationId": "acceptance-org", "departmentId": "acceptance-dept",
+        "sub": user_id, "organizationId": organization_id, "departmentId": "acceptance-dept",
         "teamId": None, "moduleKey": args.module_key, "pageKey": args.page_key,
         "actionKey": args.query_action, "operation": "query", "permissions": ["view", "ai_query"],
         "requestId": request_id, "jti": uuid4().hex, "iat": now, "exp": now + 60,

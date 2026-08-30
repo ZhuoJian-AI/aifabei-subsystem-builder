@@ -3,8 +3,9 @@ services:
     build: .
     restart: unless-stopped
     environment:
-      INTEGRATION_SECRET: ${INTEGRATION_SECRET:?}
+      ZHUOJIAN_INTEGRATION_SECRET: ${ZHUOJIAN_INTEGRATION_SECRET:?}
       SESSION_SECRET: ${SESSION_SECRET:?}
+      ZHUOJIAN_ORGANIZATION_ID: ${ZHUOJIAN_ORGANIZATION_ID:?}
       ZHUOJIAN_SAAS_ORIGINS: ${ZHUOJIAN_SAAS_ORIGINS:-https://ai-platform.staging.zhuojianai.com}
       DATABASE_PATH: /data/subsystem.db
     volumes:

@@ -31,6 +31,7 @@
   "capabilities": {"docker": true, "compose": true, "persistentVolumes": true},
   "network": {"publicPorts": [80, 443], "privateServicePortsOnly": true},
   "secretRefs": ["ZHUOJIAN_INTEGRATION_SECRET", "SESSION_SECRET"],
+  "platformBindings": ["ZHUOJIAN_ORGANIZATION_ID"],
   "verifiedAt": "<RFC3339>"
 }
 ```
