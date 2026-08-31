@@ -30,7 +30,7 @@ def contains(root: Path, names: list[str], markers: tuple[str, ...]) -> dict[str
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="只读检查爱法贝业务模块系统")
-    parser.add_argument("--path", required=True, help="仓库根目录")
+    parser.add_argument("--path", required=True, help="ECS 本地 Git 项目根目录")
     parser.add_argument("--json", action="store_true", help="输出 JSON")
     args = parser.parse_args()
     root = Path(args.path).expanduser().resolve()

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Create an isolated native subsystem starter without requiring GitHub."""
+"""Create an isolated native subsystem starter for an ECS-local Git repository."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import shutil
 from pathlib import Path
 
 KEY_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
-REPOSITORY_PART_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+PROJECT_PART_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 
 
 def stable(value: str, label: str) -> str:
@@ -20,9 +20,9 @@ def stable(value: str, label: str) -> str:
     return value
 
 
-def repository_part(value: str, label: str) -> str:
+def project_part(value: str, label: str) -> str:
     value = value.strip()
-    if not REPOSITORY_PART_RE.fullmatch(value):
+    if not PROJECT_PART_RE.fullmatch(value):
         raise argparse.ArgumentTypeError(f"{label} 只允许小写字母、数字和单连字符")
     return value
 
@@ -47,13 +47,13 @@ def main() -> int:
     args = parser.parse_args()
 
     try:
-        company_slug = repository_part(args.company_slug, "companySlug")
-        application_slug = repository_part(args.application_slug, "applicationSlug")
+        company_slug = project_part(args.company_slug, "companySlug")
+        application_slug = project_part(args.application_slug, "applicationSlug")
     except argparse.ArgumentTypeError as exc:
         parser.error(str(exc))
     if application_slug == company_slug or application_slug.startswith(f"{company_slug}-"):
-        parser.error("applicationSlug 不得重复 companySlug 前缀；仓库名会自动添加企业前缀")
-    repository_name = f"{company_slug}-{application_slug}"
+        parser.error("applicationSlug 不得重复 companySlug 前缀；本地项目名会自动添加企业前缀")
+    project_name = f"{company_slug}-{application_slug}"
     module_key = stable(args.module_key, "moduleKey")
     departments = [department(item) for item in args.department]
     if not departments:
@@ -133,7 +133,7 @@ def main() -> int:
     replacements = {
         "__APPLICATION_NAME__": args.application_name.strip(),
         "__APPLICATION_SLUG__": application_slug,
-        "__REPOSITORY_NAME__": repository_name,
+        "__LOCAL_PROJECT_NAME__": project_name,
         "__MODULE_NAME__": args.module_name.strip(),
         "__MODULE_KEY__": module_key,
     }
@@ -148,7 +148,7 @@ def main() -> int:
         "path": str(output),
         "companySlug": company_slug,
         "applicationSlug": application_slug,
-        "suggestedRepositoryName": repository_name,
+        "localProjectName": project_name,
         "moduleKey": module_key,
     }, ensure_ascii=False))
     print("下一步：实现真实字段和流程，运行项目测试，再执行 validate_endpoint.py 与 e2e_acceptance.py。")
