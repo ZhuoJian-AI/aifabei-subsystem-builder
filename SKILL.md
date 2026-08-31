@@ -50,6 +50,7 @@ GitHub 和 Coolify 不属于本 Skill 的企业模块开发、部署或更新链
 ## 开发前硬门槛
 
 - 读取全局与项目 `AGENTS.md`。
+- 网络可访问时，只读查看灼见公开源码 `https://github.com/ZhuoJian-AI/ai-platform`，用于理解现有 UI、调用链和接入实现，并记录参考 commit；不得要求 GitHub 账号、Token 或 push 权限。无法访问时不得阻塞开发，仍以本 Skill 的六大契约和 Schema 为最终标准。
 - 以本 Skill 的 Schema 和版本化契约为唯一稳定依据，不依赖灼见私有数据库结构。
 - 从空目录开发时先运行 `python <skill>/scripts/scaffold_subsystem.py --help`。
 - 已有项目先运行 `python <skill>/scripts/inspect_subsystem.py --path <项目根目录> --json`。
