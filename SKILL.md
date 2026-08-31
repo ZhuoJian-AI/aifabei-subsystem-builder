@@ -24,7 +24,7 @@ description: "让管理员 AI 初始化爱法贝企业开发环境，让业务 A
 
 根据用户现状自动选择，不把技术判断抛给小白：
 
-1. **管理员初始化**：用户提供新 ECS、云控制台或现有 Coolify 权限。读取 [管理员与服务器初始化](references/admin-bootstrap.md)，建立 Docker、远程部署、域名、HTTPS、安全规则和不含密钥的环境档案；创建远程仓库或发布代码时还必须读取 [仓库命名与自动发布](references/repository-publishing.md)。
+1. **管理员初始化**：用户提供新 ECS、云控制台或现有 Coolify 权限。读取 [管理员与服务器初始化](references/admin-bootstrap.md)，建立 Docker、远程部署、域名、HTTPS、安全规则和不含密钥的环境档案；创建远程仓库或发布代码时还必须读取 [仓库命名与自动发布](references/repository-publishing.md) 与 [Coolify 发布闭环](references/deployment-closed-loop.md)。
 2. **新建原生模块系统**：只有业务确实需要独立域名、仓库、数据库或发布周期时才选。读取 [原生聚合与扩展](references/native-aggregation.md) 和 [平台接入协议](references/platform-contract.md)，优先运行 `scripts/scaffold_subsystem.py` 建立标准骨架，再实现业务页面、数据库和 Action。
 3. **给现有系统增加子模块**：用户说“在这个模块里再加”“继续扩展当前系统”或新业务可沿用现有域名、仓库和数据库时优先选择。读取 [原生聚合与扩展](references/native-aggregation.md)，先运行 `scripts/inspect_subsystem.py --path <项目根目录> --json`；保留 `applicationSlug`、仓库、域名、接入密钥和数据卷，在同一 Manifest 的 `modules[]` 增加新的 `moduleKey`、页面和 Action，不创建新一级应用。
 4. **修改已有子模块**：先运行 `scripts/inspect_subsystem.py`，保留数据和现有能力，以兼容方式升级 Manifest 与业务代码。
@@ -84,9 +84,9 @@ python <skill>/scripts/e2e_acceptance.py --base-url https://<模块域名> --mod
 python <skill>/scripts/publish_subsystem.py --path <模块项目目录>
 ```
 
-脚本读取 `ZHUOJIAN_PLATFORM_URL`，并优先读取环境变量 `ZHUOJIAN_PUBLISH_KEY`；未设置时自动读取管理员一次性安装到 `/etc/zhuojian/publisher.key` 的企业级发布凭证。业务用户不需要登录 GitHub，脚本会自动查找或创建规范仓库并推送当前提交。管理员只在每家公司首次初始化时安装一次凭证，之后该公司的新模块和更新都不再要求管理员参与。缺少公司环境档案或发布凭证时停在“等待管理员首次初始化”，不得向用户索要 GitHub 账号或把 GitHub App 私钥复制到 ECS。
+脚本读取 `ZHUOJIAN_PLATFORM_URL`，并优先读取环境变量 `ZHUOJIAN_PUBLISH_KEY`；未设置时自动读取管理员一次性安装到 `/etc/zhuojian/publisher.key` 的企业级发布凭证。业务用户不需要登录 GitHub/Coolify：脚本自动查找或创建规范仓库、推送当前提交、让灼见中央后端在该企业部署档案指定的 Coolify Server 上创建或复用 Application、配置域名与 `/data` 卷、等待健康检查，并自动登记/同步 SaaS。完整状态机和回滚规则见 [Coolify 发布闭环](references/deployment-closed-loop.md)。管理员只在每家公司首次初始化时安装一次凭证并登记部署档案，之后该公司的新模块和更新都不再要求管理员参与。缺少部署档案或发布凭证时停在“等待管理员首次初始化”，不得向用户索要 GitHub/Coolify 账号，也不得把 GitHub App 私钥或 Coolify Token 复制到 ECS。
 
-接入密钥只通过环境变量或交互式隐藏输入传递，绝不写入命令参数、仓库、日志或回复。管理员可在灼见“接入模块系统”向导登记；已有安全管理员 Token 时，也可运行 `scripts/register_subsystem.py --help` 自动完成发现、创建和同步。业务 AI 不自行授予部门权限。
+原生新系统的接入密钥由灼见中央发布服务生成并直接写入该 Coolify Application Secret，同时加密保存到平台集成记录；业务 AI 不接触、不回显，也不再手工运行登记脚本。`register_subsystem.py` 仅用于已经单独部署或迁移进来的系统。业务 AI 不自行授予部门权限。
 
 ## 失败处理
 

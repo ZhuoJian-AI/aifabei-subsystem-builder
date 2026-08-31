@@ -48,7 +48,8 @@ aifabei-chair-library
 4. 仓库描述使用“企业名称 · 模块名称 · 灼见原生模块”，并添加 `company-{companySlug}`、`zhuojian-native-module`、`contract-v2` topics；验收仓库额外添加 `acceptance-test`。
 5. 每个正式模块系统对应一个仓库、一个 Coolify Application、一个持久卷集合和一个模块域名。一个仓库可包含该系统内多个 `moduleKey`，不为每个页面或部门再建仓库。
 6. 升级沿用同一仓库，通过 commit、tag、部署记录和 `contractRevision` 追踪；不得因平台升级复制仓库。
-7. 推送前运行源码验证并要求工作树干净。业务负责人明确要求“发布/部署”即授权本模块的建仓和 push；不再要求平台管理员逐次批准。部署和 SaaS 登记仍按各自授权执行。
+7. 推送前运行源码验证并要求工作树干净。业务负责人明确要求“发布/部署”即授权本模块的建仓、push、在本企业部署档案指定的 Coolify Server 发布以及 SaaS 自动登记；不再要求平台管理员逐次批准。业务 AI 无法选择其他企业 Server、域名后缀或 GitHub owner。
+8. Coolify API Token 只保存在灼见中央 Backend。业务 AI 使用 organization-scoped 发布 Key 调用受限发布接口，不能列举、修改或删除其他 Coolify 资源。详见 [Coolify 发布闭环](deployment-closed-loop.md)。
 
 ## 环境档案字段
 
@@ -64,7 +65,10 @@ aifabei-chair-library
     "publisher": "zhuojian-central",
     "publisherBaseUrl": "https://ai-platform.staging.zhuojianai.com",
     "publisherCredentialRef": "/etc/zhuojian/publisher.key"
-  }
+  },
+  "deploymentControl": "zhuojian-central",
+  "deploymentProfileConfigured": true,
+  "runtimeKey": "hk-01"
 }
 ```
 

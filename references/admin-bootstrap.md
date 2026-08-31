@@ -17,7 +17,17 @@
 3. 只公开 80/443；数据库、Redis 和内部 API 不发布到宿主机。SSH 沿用已有管理策略，不为方便测试扩大公网范围。
 4. 将 ECS 加入管理员指定的 Coolify Team。首次可使用用户授权的 root 会话；自动部署应切换为 Coolify 专用部署密钥。
 5. 建立 HTTPS 和 Host 路由，验证两个不同域名不会进入同一容器。不得用本机 hosts 文件冒充 DNS 完成。
-6. 生成 `zhuojian-environment.json`，只写非敏感能力和标识；密钥写入 Coolify Secret/环境变量，由档案中的 `secretRefs` 引用名字。
+6. 在灼见为该企业登记 Coolify 部署档案：`server_uuid`、`project_uuid`、Environment、`github_app_uuid` 和通配域名后缀。验证中央 Backend 的 Coolify Token 可操作该目标；Token 本身不写入企业档案或 ECS。
+7. 生成 `zhuojian-environment.json`，只写非敏感能力和标识；密钥由灼见中央发布服务直接写入 Coolify Secret，档案只引用名字。闭环见 [Coolify 发布闭环](deployment-closed-loop.md)。
+
+管理员 AI 已取得短时灼见管理员 JWT 后，不要求用户手填接口，直接运行：
+
+```text
+python <skill>/scripts/configure_deployment_profile.py --organization-id <组织UUID> --runtime-key hk-01 --default-runtime --server-uuid <Coolify Server UUID> --project-uuid <Coolify Project UUID> --github-app-uuid <Coolify GitHub Source UUID> --domain-suffix aifabei.staging.zhuojianai.com
+```
+
+JWT 只通过临时环境变量 `ZHUOJIAN_ADMIN_TOKEN` 传入，命令成功后立即从进程环境清除；不得写入环境档案。
+同一企业有多台 ECS 时为每台登记不同 `runtime-key`；环境档案用 `ZHUOJIAN_RUNTIME_KEY` 指定该开发环境，未指定时使用 `--default-runtime` 标记的目标。已有模块更新时固定沿用最初 Runtime，发布命令不能顺手搬服务器。
 
 ### 资源预检与小规格服务器
 
@@ -43,7 +53,16 @@
   "enterpriseKey": "aifabei",
   "environment": "staging",
   "runtimeId": "aifabei-hk-01",
-  "deployment": {"provider": "coolify", "serverId": "<opaque-id>"},
+  "deployment": {
+    "provider": "coolify",
+    "controlPlane": "zhuojian-central",
+    "serverId": "<opaque-id>",
+    "projectId": "<opaque-id>",
+    "environment": "production",
+    "runtimeKey": "aifabei-hk-01",
+    "githubSourceId": "<opaque-id>",
+    "profileConfigured": true
+  },
   "domains": {"suffix": "aifabei.staging.zhuojianai.com", "httpsRequired": true},
   "capabilities": {
     "docker": true,
