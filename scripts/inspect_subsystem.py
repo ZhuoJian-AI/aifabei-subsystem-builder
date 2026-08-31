@@ -57,7 +57,61 @@ def main() -> int:
             "/api/integration/sso",
         ),
     )
-    report = {"root": str(root), "files": files, "contract": markers}
+    manifest_path = root / "subsystem.json"
+    manifest: dict | None = None
+    manifest_error: str | None = None
+    if manifest_path.is_file():
+        try:
+            payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+            if not isinstance(payload, dict):
+                raise ValueError("subsystem.json 顶层必须是对象")
+            manifest = payload
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            manifest_error = str(exc)
+
+    modules = []
+    if manifest is not None:
+        for item in manifest.get("modules") or []:
+            if not isinstance(item, dict):
+                continue
+            modules.append({
+                "moduleKey": item.get("moduleKey"),
+                "name": item.get("name"),
+                "route": item.get("route"),
+                "departments": [
+                    department.get("key") for department in item.get("departments") or []
+                    if isinstance(department, dict) and department.get("key")
+                ],
+                "pageKeys": [
+                    page.get("pageKey") for page in item.get("pages") or []
+                    if isinstance(page, dict) and page.get("pageKey")
+                ],
+                "actionKeys": [
+                    action.get("actionKey") for action in item.get("actions") or []
+                    if isinstance(action, dict) and action.get("actionKey")
+                ],
+            })
+    report = {
+        "root": str(root),
+        "files": files,
+        "contract": markers,
+        "manifest": {
+            "path": str(manifest_path) if manifest_path.is_file() else None,
+            "error": manifest_error,
+            "enterpriseKey": (manifest or {}).get("enterprise", {}).get("key")
+            if isinstance((manifest or {}).get("enterprise"), dict) else None,
+            "applicationSlug": (manifest or {}).get("applicationSlug"),
+            "applicationName": (manifest or {}).get("applicationName"),
+            "contractRevision": (manifest or {}).get("contractRevision"),
+            "moduleCount": len(modules),
+            "modules": modules,
+        },
+        "recommendedMode": (
+            "extend-existing-system" if manifest is not None and modules
+            else "inspect-manually" if manifest_error
+            else "new-system-or-legacy"
+        ),
+    }
     if args.json:
         print(json.dumps(report, ensure_ascii=False, indent=2))
     else:
@@ -66,6 +120,16 @@ def main() -> int:
             print(f"- {'已有' if ok else '缺少'} {label}")
         for marker, ok in markers.items():
             print(f"- {'已有' if ok else '缺少'} 接入标记 {marker}")
+        if manifest_error:
+            print(f"- Manifest 读取失败：{manifest_error}")
+        elif manifest is not None:
+            print(f"- applicationSlug：{manifest.get('applicationSlug') or '缺少'}")
+            print(f"- 子模块：{len(modules)} 个")
+            for module in modules:
+                print(
+                    f"  - {module.get('moduleKey')}: "
+                    f"页面 {len(module['pageKeys'])}，Action {len(module['actionKeys'])}"
+                )
         print("本脚本只读，不读取或输出任何密钥值。")
     return 0
 

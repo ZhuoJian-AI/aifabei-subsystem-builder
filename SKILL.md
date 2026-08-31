@@ -25,9 +25,12 @@ description: "让管理员 AI 初始化爱法贝企业开发环境，让业务 A
 根据用户现状自动选择，不把技术判断抛给小白：
 
 1. **管理员初始化**：用户提供新 ECS、云控制台或现有 Coolify 权限。读取 [管理员与服务器初始化](references/admin-bootstrap.md)，建立 Docker、远程部署、域名、HTTPS、安全规则和不含密钥的环境档案；创建远程仓库或发布代码时还必须读取 [仓库命名与自动发布](references/repository-publishing.md)。
-2. **原生模块开发**：用户描述新业务。读取 [平台接入协议](references/platform-contract.md)，优先运行 `scripts/scaffold_subsystem.py` 建立标准骨架，再实现业务页面、数据库和 Action。
-3. **修改原生模块**：先运行 `scripts/inspect_subsystem.py`，保留数据和现有能力，以兼容方式升级 Manifest 与业务代码。
-4. **接入老系统**：只做 iframe、域名白名单和管理员授权；老系统未实现原生 SSO/Action 前，允许用户在 iframe 内额外登录一次，不伪装成已经打通数据。
+2. **新建原生模块系统**：只有业务确实需要独立域名、仓库、数据库或发布周期时才选。读取 [原生聚合与扩展](references/native-aggregation.md) 和 [平台接入协议](references/platform-contract.md)，优先运行 `scripts/scaffold_subsystem.py` 建立标准骨架，再实现业务页面、数据库和 Action。
+3. **给现有系统增加子模块**：用户说“在这个模块里再加”“继续扩展当前系统”或新业务可沿用现有域名、仓库和数据库时优先选择。读取 [原生聚合与扩展](references/native-aggregation.md)，先运行 `scripts/inspect_subsystem.py --path <项目根目录> --json`；保留 `applicationSlug`、仓库、域名、接入密钥和数据卷，在同一 Manifest 的 `modules[]` 增加新的 `moduleKey`、页面和 Action，不创建新一级应用。
+4. **修改已有子模块**：先运行 `scripts/inspect_subsystem.py`，保留数据和现有能力，以兼容方式升级 Manifest 与业务代码。
+5. **接入老系统**：只做 iframe、域名白名单和管理员授权；老系统未实现原生 SSO/Action 前，允许用户在 iframe 内额外登录一次，不伪装成已经打通数据。
+
+如果无法判断是否需要新系统，先检查现有 Manifest 和部署档案。能在现有业务边界内实现时默认增加 `moduleKey`；只有需要独立故障域、数据隔离、域名或发布周期时才新建 `applicationSlug`。这个判断由 AI 完成，不要求业务用户理解仓库、容器或 Manifest。
 
 ## 开发前硬门槛
 
@@ -35,13 +38,16 @@ description: "让管理员 AI 初始化爱法贝企业开发环境，让业务 A
 - 新原生模块参考灼见公开源码 `https://github.com/ZhuoJian-AI/ai-platform`，记录参考提交；以本 Skill 的 Schema 和版本化契约为准，不依赖平台私有数据库结构。
 - 从空目录开发时先运行 `python <skill>/scripts/scaffold_subsystem.py --help`。
 - 已有项目先运行 `python <skill>/scripts/inspect_subsystem.py --path <项目根目录> --json`。
+- 检查结果已有相符 `applicationSlug` 时，不得通过新仓库、新域名或名称后缀绕开扩展；新增子模块必须沿用原系统并保持已有 `moduleKey`、页面路由、Action 和数据迁移兼容。
 - GitHub 不是业务用户前置条件。业务 AI 只使用本地 Git；首次发布时调用 `scripts/publish_subsystem.py`，由灼见中央发布服务创建私有仓库并签发仅限该仓库、短时有效的推送 Token。GitHub App 私钥不得进入 Skill、企业 ECS、仓库、日志或回复，规则见 [仓库命名与自动发布](references/repository-publishing.md)。
+- 管理员交付的环境档案必须明确 `sourceBuild` 和 `maxConcurrentBuilds`。`sourceBuild=false` 时，业务 AI 只能走中央构建后拉取镜像，不得在目标 ECS 临时加 Swap、并行构建或自行改变底座。
 
 ## 原生模块必须满足
 
 - 固定端点：`/health`、Manifest、事件拉取、事件投递、Action 和 SSO。
 - Manifest `version` 保持整数 `2`，新增能力用 `contractRevision` 表示；按 `schemas/manifest-v2.schema.json` 输出。
 - 每个子模块恰好一个 owner 部门；每个参与部门必须显式声明 `pageKeys` 和 `actionKeys` 作为建议授权上限，页面必须声明 `pageKey`、路由、上下文 Schema 和允许的 Action。平台管理员或企业管理员仍须确认，Manifest 不能自行扩权。
+- 模块系统是隐藏在部署层的技术边界，不是员工端唯一导航颗粒度。原生员工体验必须按“企业 → 子模块 → 页面”聚合；远端页面只渲染业务内容，不重复灼见侧边栏、企业选择器或登录页。具体规则见 [原生聚合与扩展](references/native-aggregation.md)。
 - SSO 会话必须保存灼见签发的 `pageKeys`、`actionKeys` 和 `pageAccess`。子系统只渲染获授权页面，直接访问未授权路由返回 403；页面按钮和 `/api/ui/actions/*` 还必须再次校验当前页面与 Action 都在会话 allowlist 中。只校验模块级 `permissions` 不合格。
 - 页面按钮与 AI 调用同一个应用服务函数和权限判断。
 - AI 工具必须同时通过用户、企业、应用、子模块、页面、Action 和管理员授权；`aiEnabled=false` 永不暴露给 AI。
@@ -65,6 +71,13 @@ python <skill>/scripts/validate_endpoint.py --base-url https://<模块域名>
 python <skill>/scripts/e2e_acceptance.py --base-url https://<模块域名> --module-key <moduleKey> --page-key <pageKey> --query-action <actionKey>
 ```
 
+给现有系统增加子模块时，验收还必须证明旧、新子模块同时存在，不能只验证新页面：
+
+```text
+python <skill>/scripts/validate_endpoint.py --base-url https://<模块域名> --expect-min-modules 2 --expect-module-key <旧moduleKey> --expect-module-key <新moduleKey>
+python <skill>/scripts/e2e_acceptance.py --base-url https://<模块域名> --module-key <新moduleKey> --page-key <新pageKey> --query-action <新queryActionKey>
+```
+
 首次发布或后续更新由业务负责人明确说“发布/部署”后运行：
 
 ```text
@@ -82,6 +95,13 @@ python <skill>/scripts/publish_subsystem.py --path <模块项目目录>
 - DNS、HTTPS、反向代理或容器问题：修管理员初始化流程，不把服务器特例硬编码进业务代码。
 
 冷启动验收时禁止人工替业务 AI 补写业务代码。失败尝试保留报告，清理仅限本次带标签的隔离资源，然后换全新无上下文 AI 重跑。
+
+## 冷启动角色与隔离
+
+- 管理员 AI 只准备 Skill、企业档案、目标域名、平台登记入口和各自独立的服务器边界；不登录业务 AI 的工作目录替它修改代码，也不手工修补业务数据库。
+- 每个业务 AI 只获得本 Skill、业务描述、自己的项目/域名/服务器以及该环境允许使用的凭证。它不得读取另一业务 AI 的目录、仓库、服务器、日志或失败报告。
+- 两个业务 AI 并行测试时使用不同本地目录、仓库、Coolify resource、容器标签和数据卷；目标服务器必须显式写入任务边界。即使管理员同时拥有两台服务器权限，也不能把一台服务器的代码、Secret 或卷复制给另一台作为捷径。
+- 管理员仅从公开端点、Coolify状态和灼见登记结果进行黑盒验收。业务 AI 失败时，管理员先判断是 Skill、平台契约还是基础设施问题；不得进入其服务器直接补业务代码后宣称冷启动成功。
 
 ## 管理员接入回执
 

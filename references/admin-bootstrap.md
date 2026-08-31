@@ -12,12 +12,21 @@
 
 ## 初始化流程
 
-1. 只读记录实例区域、公网/内网地址、系统版本、磁盘、Docker、监听端口、反向代理、容器、网络、数据卷和现有域名。
+1. 只读记录实例区域、公网/内网地址、系统版本、CPU、内存、Swap、磁盘、Docker、监听端口、反向代理、容器、网络、数据卷和现有域名。
 2. 确认目标域名真实解析到该 ECS。一个系统一个域名；多个系统可共享 ECS，但必须使用独立容器、回环端口、网络和数据卷。
 3. 只公开 80/443；数据库、Redis 和内部 API 不发布到宿主机。SSH 沿用已有管理策略，不为方便测试扩大公网范围。
 4. 将 ECS 加入管理员指定的 Coolify Team。首次可使用用户授权的 root 会话；自动部署应切换为 Coolify 专用部署密钥。
 5. 建立 HTTPS 和 Host 路由，验证两个不同域名不会进入同一容器。不得用本机 hosts 文件冒充 DNS 完成。
 6. 生成 `zhuojian-environment.json`，只写非敏感能力和标识；密钥写入 Coolify Secret/环境变量，由档案中的 `secretRefs` 引用名字。
+
+### 资源预检与小规格服务器
+
+- 把“可以运行已构建镜像”和“可以在本机从源码构建镜像”分开判断。交付业务 AI 前必须记录可用内存、Swap、磁盘余量和允许的并发构建数。
+- 本机源码构建的推荐基线是至少 2 GiB 内存；低于 2 GiB 且没有 Swap 时，环境档案必须标记 `sourceBuild=false`，不得让业务 AI 直接触发 Python/Node 依赖构建。
+- 1 GiB 轻量服务器只允许以下二选一：由管理员先配置受控 Swap 并验证一次串行构建，或使用中央流水线/镜像仓库构建后仅在目标服务器拉取运行。Swap 属于服务器底座，不得由业务 AI 临时创建。
+- 小规格服务器的 `maxConcurrentBuilds` 固定为 `1`；测试、Playwright、Schema 校验器等在开发机或流水线执行，不进入生产镜像构建。
+- 构建期间若 SSH、HTTPS、命令助手同时无响应，管理员按基础设施故障处理：停止继续下发部署，保留卷，恢复实例后检查 OOM、构建进程和容器状态。不得进入业务目录手工修改代码来掩盖底座问题。
+- 磁盘必须同时容纳当前镜像、下一版镜像和构建缓存；余量不足时停止发布并清理本次可确认的构建缓存，禁止全局 prune 或删除未知卷。
 
 ### Coolify 健康检查约束
 
@@ -36,7 +45,14 @@
   "runtimeId": "aifabei-hk-01",
   "deployment": {"provider": "coolify", "serverId": "<opaque-id>"},
   "domains": {"suffix": "aifabei.staging.zhuojianai.com", "httpsRequired": true},
-  "capabilities": {"docker": true, "compose": true, "persistentVolumes": true},
+  "capabilities": {
+    "docker": true,
+    "compose": true,
+    "persistentVolumes": true,
+    "sourceBuild": true,
+    "maxConcurrentBuilds": 1
+  },
+  "resources": {"memoryMiB": 4096, "swapMiB": 0, "diskFreeGiB": 20},
   "network": {"publicPorts": [80, 443], "privateServicePortsOnly": true},
   "sourceControl": {
     "provider": "github",

@@ -40,7 +40,11 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="验证爱法贝模块系统 v2 接入协议")
     parser.add_argument("--base-url", required=True)
     parser.add_argument("--token-env", default="ZHUOJIAN_INTEGRATION_SECRET", help="保存唯一接入密钥的环境变量名")
+    parser.add_argument("--expect-min-modules", type=int, default=1, help="至少应发现多少个子模块")
+    parser.add_argument("--expect-module-key", action="append", default=[], help="必须存在的 moduleKey，可重复")
     args = parser.parse_args()
+    if args.expect_min_modules < 1:
+        parser.error("--expect-min-modules 必须大于等于 1")
     base = args.base_url.rstrip("/") + "/"
     token = os.environ.get(args.token_env, "")
 
@@ -89,6 +93,11 @@ def main() -> int:
     modules = manifest.get("modules")
     if not isinstance(modules, list) or not modules:
         raise SystemExit("清单 modules 必须是非空列表。")
+    if len(modules) < args.expect_min_modules:
+        raise SystemExit(
+            f"清单只有 {len(modules)} 个子模块，验收要求至少 {args.expect_min_modules} 个；"
+            "不能把新增子模块发布成另一个一级应用来绕过。"
+        )
     module_keys: set[str] = set()
     action_keys: set[str] = set()
     page_keys: set[str] = set()
@@ -174,6 +183,10 @@ def main() -> int:
                 raise SystemExit(f"{label}.departments[{department_index}].actionKeys 引用了本子模块不存在的操作。")
             if any(str(key) not in module_page_keys for key in department["pageKeys"]):
                 raise SystemExit(f"{label}.departments[{department_index}].pageKeys 引用了本子模块不存在的页面。")
+
+    missing_expected = sorted(set(args.expect_module_key) - module_keys)
+    if missing_expected:
+        raise SystemExit("清单缺少预期子模块：" + "、".join(missing_expected))
 
     print(
         f"接入验证通过：健康状态 {health.get('status', 'ok')}，企业 {enterprise['name']}，"

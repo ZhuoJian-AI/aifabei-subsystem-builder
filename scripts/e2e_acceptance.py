@@ -94,7 +94,8 @@ def main() -> int:
         },
         "jti": uuid4().hex, "iat": now, "exp": now + 60,
     }
-    sso_url = urljoin(base, "api/integration/sso") + "?" + urlencode({"ticket": jwt(secret, sso_claims), "redirect": module["route"]})
+    # SSO must land on the exact authorized page, not a coarse application home.
+    sso_url = urljoin(base, "api/integration/sso") + "?" + urlencode({"ticket": jwt(secret, sso_claims), "redirect": page["routePattern"]})
     sso_status, _ = json_request(sso_url, token="")
     if sso_status != 302:
         raise SystemExit(f"SSO 票据交换失败：HTTP {sso_status}")
