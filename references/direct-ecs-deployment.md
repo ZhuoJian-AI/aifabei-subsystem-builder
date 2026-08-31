@@ -30,7 +30,7 @@
 7. 首次生成独立 `ZHUOJIAN_INTEGRATION_SECRET` 和 `SESSION_SECRET`，写入 Secret 文件；后续更新复用，轮换必须与灼见协调，不能随部署自动更换。
 8. 构建 `zhuojian/<enterprise>/<applicationSlug>:<commitSHA>`，启动新容器并挂载固定数据目录。先从回环地址检查 `/health`，再原子切换 Nginx；新容器不健康时恢复旧容器和旧镜像。
 9. 为 `https://<applicationSlug>.<domainSuffix>` 写入 Nginx Host 路由并签发/复用 HTTPS 证书。验证证书、`frame-ancestors`、Host 隔离、`/health` 和 Manifest。
-10. 使用 ECS 登记凭证向灼见登记 `baseUrl`、`applicationSlug` 和模块接入密钥；凭证只通过 Secret 文件或临时环境读取，不打印。灼见检查域名后缀、组织、健康与 Manifest 后创建/复用企业应用并同步，默认不创建任何 grant。
+10. 使用 `scripts/publish_subsystem.py` 和 ECS Runtime 登记凭证向灼见登记当前 Git commit、`baseUrl`、`applicationSlug`、镜像引用和模块接入密钥；凭证只从环境档案引用的 Secret 文件读取，模块接入密钥只从环境变量读取，二者都不打印。灼见检查域名后缀、组织、健康与 Manifest 后创建/复用企业应用并同步，默认不创建任何 grant。
 11. 运行 `validate_endpoint.py` 和 `e2e_acceptance.py`，输出管理员接入回执。
 
 ## 后续更新
@@ -49,6 +49,33 @@
 
 Manifest 同步负责让灼见看到新增、修改或停用的子模块、页面、Action 和事件。新增能力默认为待授权；已有 grant 不得因为 Manifest 更新而自动扩大。
 
+## 发布登记接口
+
+业务 AI 的首次发布和后续更新使用同一个接口：
+
+```text
+POST /api/v1/ecs-publisher/modules/register
+Authorization: Bearer <ECS Runtime 登记凭证>
+```
+
+请求字段：
+
+- `application_slug`、`application_name`：从已验证的 Manifest 取得；
+- `base_url`：必须严格等于 `https://{applicationSlug}.{runtime.domainSuffix}`；
+- `integration_secret`：当前模块自己的 `ZHUOJIAN_INTEGRATION_SECRET`；
+- `source_commit`：干净本地 Git 的完整 commit SHA；
+- `image_ref`：可选的不可变镜像引用；
+- `release_metadata`：不超过 64 KiB 的非敏感部署摘要。
+
+平台根据 Runtime 凭证自动锁定 `organizationId`、`enterpriseKey` 和域名后缀，业务 AI不能在请求体中改写这些身份。平台随后读取 Manifest、创建或复用企业应用、保存模块接入配置并执行同步；返回 `healthy` 才算登记成功。返回 `failed` 时模块继续独立运行，但灼见不把失败版本当作成功版本。
+
+查询当前 Runtime 自己发布的模块使用：
+
+```text
+GET /api/v1/ecs-publisher/modules/{applicationSlug}
+Authorization: Bearer <ECS Runtime 登记凭证>
+```
+
 ## 自动登记的最小权限
 
 管理员初始化 ECS 时安装的登记凭证必须绑定：
@@ -61,7 +88,7 @@ Manifest 同步负责让灼见看到新增、修改或停用的子模块、页�
 
 登记服务必须拒绝 localhost、私网/元数据地址、非 HTTPS、跨企业组织 ID、后缀外域名、危险重定向和不合格 Manifest。凭证不能创建授权、调用业务 Action、读取其他应用或操作服务器。
 
-如果灼见尚未提供该受限登记接口，发布应停在“模块健康、等待管理员首次登记”，不得退回 GitHub/Coolify或向业务用户索要平台管理员 Token。管理员登记一次后，后续 Manifest 更新仍可由平台定时同步。
+如果目标灼见环境尚未部署 Alembic `0048_ecs_publisher_runtime` 和 `/api/v1/ecs-publisher` 路由，发布应停在“模块健康、等待平台升级”，不得退回 GitHub/Coolify或向业务用户索要平台管理员 Token。平台升级后直接重跑发布登记，无需重建模块。
 
 ## 故障边界
 

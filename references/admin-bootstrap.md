@@ -28,7 +28,7 @@
    ```
 
 6. 安装受控直接部署入口。它只能在以上目录内创建/更新指定 `applicationSlug`，分配回环端口、构建不可变镜像、生成 Nginx 虚拟主机、检查 HTTPS/健康和回滚本次发布；不得运行全局 Docker prune、删除未知卷或重启无关服务。
-7. 管理员在灼见为该企业签发一枚 **ECS 登记凭证**，安装到 `/etc/zhuojian/runtime-registration.key`，权限为目录 `0700`、文件 `0600`。它只允许把该域名后缀下、该组织的健康模块登记/重新同步到灼见，不允许部署代码、管理服务器、授予权限或访问其他企业。
+7. 管理员在灼见为该企业签发一枚 **ECS Runtime 登记凭证**。优先运行 `scripts/provision_runtime.py`，让它调用平台接口并分别写入凭证和环境档案；不得复制到命令参数、终端回显或回复。凭证文件固定为 `/etc/zhuojian/runtime-registration.key`，权限为目录 `0700`、文件 `0600`。它只允许把该域名后缀下、该组织的健康模块登记/重新同步到灼见，不允许部署代码、管理服务器、授予权限或访问其他企业。
 8. 生成不含密钥的 `/etc/zhuojian/runtime.json`，然后用一个最小测试容器验证域名隔离、HTTPS、`/health`、Manifest 可达和登记链路。测试资源使用独立名称和数据目录，不碰已有项目。
 
 ## 环境档案
@@ -87,6 +87,39 @@
 ```
 
 业务 AI 只读取这份非敏感档案，选择尚未占用的 `applicationSlug`，在固定目录开发和发布；不得要求用户再次登录阿里云、GitHub、Coolify或手工编辑 Nginx。
+
+## SaaS Runtime 接口
+
+管理员的一次性签发使用：
+
+```text
+POST /api/v1/ecs-publisher/organizations/{organizationId}/runtimes
+Authorization: Bearer <平台管理员会话 Token>
+```
+
+请求字段为 `runtime_key`、`enterprise_key`、`environment`、`domain_suffix` 和可选 `public_address`。响应包含 `runtime`、只出现一次的 `credential` 与不含密钥的 `runtime_profile`。调用前必须确认凭证和档案目标文件不存在；不得覆盖旧文件后重新签发造成正在运行的发布链路失效。
+
+推荐命令（Token 只放临时环境变量）：
+
+```text
+python <skill>/scripts/provision_runtime.py \
+  --organization-id <组织UUID> \
+  --runtime-key aifabei-hk-01 \
+  --enterprise-key aifabei \
+  --environment staging \
+  --domain-suffix aifabei.staging.zhuojianai.com \
+  --public-address <ECS公网IP>
+```
+
+平台管理员可用以下接口查看、停用或轮换，业务 AI 不得调用：
+
+```text
+GET   /api/v1/ecs-publisher/organizations/{organizationId}/runtimes
+PATCH /api/v1/ecs-publisher/organizations/{organizationId}/runtimes/{runtimeId}
+POST  /api/v1/ecs-publisher/organizations/{organizationId}/runtimes/{runtimeId}/rotate-credential
+```
+
+轮换后旧凭证立即失效。新凭证仍只显示一次，必须先原子写入临时 `0600` 文件，再替换正式文件；轮换不应改变模块域名、本地 Git、数据目录或接入密钥。
 
 ## 资源预检
 

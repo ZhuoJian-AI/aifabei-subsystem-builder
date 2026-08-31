@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Admin-only discovery and registration helper for ZhuoJian SaaS."""
+"""Legacy admin registration helper for systems without an ECS Runtime profile.
+
+Native modules should use provision_runtime.py once and publish_subsystem.py for
+every release.  This helper remains for administrator-led legacy onboarding.
+"""
 
 from __future__ import annotations
 
@@ -25,7 +29,7 @@ def call(url: str, token: str, method: str, body: dict | None = None) -> dict:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="管理员发现并登记灼见原生模块")
+    parser = argparse.ArgumentParser(description="管理员手工发现并登记尚无 Runtime 档案的旧系统")
     parser.add_argument("--platform-url", default="https://ai-platform.staging.zhuojianai.com")
     parser.add_argument("--organization-id", required=True)
     parser.add_argument("--base-url", required=True)

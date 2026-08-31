@@ -33,13 +33,13 @@ GitHub 和 Coolify 不属于本 Skill 的企业模块开发、部署或更新链
 5. **Action**：页面和 AI 通过同一业务服务完成查询、创建、修改、删除、审批和导出。
 6. **Event**：不同模块通过版本化、幂等事件交换业务变化，不共享数据库。
 
-完整字段和安全规则见 [平台接入协议](references/platform-contract.md)。ECS 部署只负责让实现这六项契约的服务稳定运行，不新增第七个 SaaS 运行时契约。
+完整字段和安全规则见 [平台接入协议](references/platform-contract.md)。ECS Publisher 只是管理员初始化和发布登记通道，不是第七个业务契约；它不能替代 Manifest、SSO、授权、Bridge、Action 或 Event。
 
 ## 先选择执行模式
 
 根据用户现状自动选择，不把技术判断抛给小白：
 
-1. **管理员一次性初始化 ECS**：读取 [管理员与服务器初始化](references/admin-bootstrap.md)，建立 Docker、本地 Git、Nginx、域名、HTTPS、安全规则、直接部署命令和不含密钥的环境档案。每台新 ECS 只做一次；不接入 GitHub 或 Coolify。
+1. **管理员一次性初始化 ECS**：读取 [管理员与服务器初始化](references/admin-bootstrap.md)，建立 Docker、本地 Git、Nginx、域名、HTTPS和安全规则，并运行 `scripts/provision_runtime.py` 安装最小权限登记凭证与无密钥环境档案。每台新 ECS 只做一次；不接入 GitHub 或 Coolify。
 2. **新建原生模块系统**：只有业务确实需要独立域名、数据库、故障隔离或发布周期时才选。读取 [原生聚合与扩展](references/native-aggregation.md)、[平台接入协议](references/platform-contract.md) 和 [ECS 直接发布](references/direct-ecs-deployment.md)，优先运行 `scripts/scaffold_subsystem.py` 建立标准骨架，再实现业务页面、数据库和 Action。
 3. **给现有系统增加子模块**：用户说“在这个模块里再加”“继续扩展当前系统”或新业务可沿用现有域名和数据库时优先选择。读取 [原生聚合与扩展](references/native-aggregation.md)，先运行 `scripts/inspect_subsystem.py --path <项目根目录> --json`；保留 `applicationSlug`、本地 Git、域名、接入密钥和数据卷，在同一 Manifest 的 `modules[]` 增加新的 `moduleKey`、页面和 Action。
 4. **修改已有子模块**：先运行 `scripts/inspect_subsystem.py`，保留数据和现有能力，以兼容方式升级 Manifest 与业务代码，并部署到原域名。
@@ -50,7 +50,7 @@ GitHub 和 Coolify 不属于本 Skill 的企业模块开发、部署或更新链
 ## 开发前硬门槛
 
 - 读取全局与项目 `AGENTS.md`。
-- 网络可访问时，只读查看灼见公开源码 `https://github.com/ZhuoJian-AI/ai-platform`，用于理解现有 UI、调用链和接入实现，并记录参考 commit；不得要求 GitHub 账号、Token 或 push 权限。无法访问时不得阻塞开发，仍以本 Skill 的六大契约和 Schema 为最终标准。
+- 网络可访问时，只读查看灼见公开源码 `https://github.com/ZhuoJian-AI/ai-platform`，重点参考 `llm_router/backend/app/api/ecs_publisher.py`、`app/services/subsystem_*` 与企业应用前端调用链，并记录参考 commit；不得要求 GitHub 账号、Token 或 push 权限。无法访问时不得阻塞开发，仍以本 Skill 的六大契约和 Schema 为最终标准。
 - 以本 Skill 的 Schema 和版本化契约为唯一稳定依据，不依赖灼见私有数据库结构。
 - 从空目录开发时先运行 `python <skill>/scripts/scaffold_subsystem.py --help`。
 - 已有项目先运行 `python <skill>/scripts/inspect_subsystem.py --path <项目根目录> --json`。
@@ -85,11 +85,12 @@ GitHub 和 Coolify 不属于本 Skill 的企业模块开发、部署或更新链
 python <skill>/scripts/validate_source.py --path <模块项目目录>
 python <skill>/scripts/validate_endpoint.py --base-url https://<模块域名>
 python <skill>/scripts/e2e_acceptance.py --base-url https://<模块域名> --module-key <moduleKey> --page-key <pageKey> --query-action <actionKey>
+python <skill>/scripts/publish_subsystem.py --project-path <模块项目目录> --base-url https://<模块域名>
 ```
 
-首次发布和后续更新都部署同一本地 Git 仓库、同一 `applicationSlug`、域名、数据目录和接入密钥。成功后通知灼见重新同步 Manifest；新增子模块、页面、部门建议和 Action 默认为待授权。
+前三项验证通过、容器和 Nginx 已切换到健康版本后，最后一项通过 `POST /api/v1/ecs-publisher/modules/register` 登记当前 Git commit 并同步 Manifest。首次发布和后续更新都部署同一本地 Git 仓库、同一 `applicationSlug`、域名、数据目录和接入密钥；新增子模块、页面、部门建议和 Action 默认为待授权。
 
-管理员只在每台 ECS 初始化一次：安装运行底座、配置通配 DNS/HTTPS策略、建立目录、生成环境档案并安装该 ECS 所属企业的登记凭证。业务 AI 后续不得要求用户提供 GitHub/Coolify账号，也不得要求管理员逐项目配置基础设施。
+管理员只在每台 ECS 初始化一次：安装运行底座、配置通配 DNS/HTTPS策略、建立目录，并用管理员会话调用 `POST /api/v1/ecs-publisher/organizations/{organizationId}/runtimes`；平台只回显一次 Runtime 凭证，管理员 AI 将其写入 `0600` 文件。业务 AI 后续只能读取该文件完成登记，不获得平台管理员 Token，也不得要求用户提供 GitHub/Coolify账号或要求管理员逐项目配置基础设施。
 
 ## 失败处理
 
