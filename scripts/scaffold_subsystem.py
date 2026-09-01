@@ -92,16 +92,20 @@ def main() -> int:
         "approver": {"query", "approve", "export"},
         "consumer": {"query", "export"},
     }
-    for item in departments:
-        item["pageKeys"] = [page_key]
-        item["actionKeys"] = [
+    access_roles = [{
+        "roleKey": f"{module_key}.{item['key']}.{item['role']}",
+        "name": f"{args.module_name}{item['name']}{'负责人' if item['role'] == 'owner' else '协作角色'}",
+        "suggestedDepartmentKey": item["key"],
+        "pageKeys": [page_key],
+        "actionKeys": [
             row["actionKey"] for row in action_rows
             if row["operation"] in role_operations[item["role"]]
-        ]
+        ],
+    } for item in departments]
     config = {
         "protocol": "zhuojian-subsystem",
         "version": 2,
-        "contractRevision": "2.3",
+        "contractRevision": "2.4",
         "enterprise": {"key": company_slug, "name": args.company_name.strip()},
         "applicationSlug": application_slug,
         "applicationName": args.application_name.strip(),
@@ -114,6 +118,7 @@ def main() -> int:
             "name": args.module_name.strip(),
             "route": f"/{module_key.replace('_', '-')}",
             "departments": departments,
+            "accessRoles": access_roles,
             "pages": [{
                 "pageKey": page_key,
                 "name": f"{args.module_name}列表",

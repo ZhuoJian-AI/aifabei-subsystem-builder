@@ -50,14 +50,14 @@ def main() -> int:
     missing_scope = {"pageKeys", "actionKeys", "pageAccess"} - page_scope_tokens
     if missing_scope:
         failures.append(
-            "未实现 v2.3 SSO 页面/操作 allowlist：" + ", ".join(sorted(missing_scope))
+            "未实现 v2.4 SSO 页面/操作 allowlist：" + ", ".join(sorted(missing_scope))
         )
     if failures:
         print("SOURCE VALIDATION FAILED")
         for failure in failures:
             print(f"- {failure}")
         return 1
-    print("SOURCE VALIDATION PASS: bridge origin and v2.3 SSO page/action scope are present")
+    print("SOURCE VALIDATION PASS: bridge origin and v2.4 SSO page/action scope are present")
     return 0
 
 

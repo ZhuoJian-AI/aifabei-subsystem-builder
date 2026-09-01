@@ -60,8 +60,11 @@ def main() -> int:
         raise SystemExit("清单缺少字段：" + "、".join(missing))
     if manifest.get("protocol") != "zhuojian-subsystem" or manifest.get("version") != 2:
         raise SystemExit("清单必须使用 zhuojian-subsystem version 2。")
-    if manifest.get("contractRevision") != "2.3":
-        raise SystemExit("冷启动验收要求 contractRevision=2.3。")
+    if manifest.get("contractRevision") != "2.4":
+        raise SystemExit("冷启动验收要求 contractRevision=2.4。")
+    for module in manifest.get("modules") or []:
+        if not module.get("accessRoles"):
+            raise SystemExit(f"子模块 {module.get('moduleKey')} 缺少 accessRoles 角色建议。")
     enterprise = manifest.get("enterprise")
     if not isinstance(enterprise, dict) or not enterprise.get("key") or not enterprise.get("name"):
         raise SystemExit("清单 enterprise 必须包含稳定 key 和 name。")

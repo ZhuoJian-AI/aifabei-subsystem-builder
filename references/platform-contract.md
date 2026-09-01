@@ -1,4 +1,4 @@
-# 灼见原生模块接入协议 v2.3
+# 灼见原生模块接入协议 v2.4
 
 `version` 始终是整数 `2`；兼容增强写入字符串 `contractRevision`。平台必须兼容没有 `contractRevision` 和 `pages` 的 v2.0 模块。
 
@@ -6,10 +6,12 @@
 
 - `enterprise.key`：企业稳定标识，爱法贝为 `aifabei`。
 - `applicationSlug`：独立模块系统、域名和发布单元。
-- `moduleKey`：子模块及最小授权单位；每个子模块恰好一个 owner 部门。
-- `pageKey`：子模块内稳定页面/工作上下文。
-- `actionKey`：系统内全局唯一业务命令。
-- `departments[].pageKeys/actionKeys`：该参与部门建议获得的页面和操作上限；平台管理员或企业管理员确认后才形成实际授权。
+- `moduleKey`：业务大模块中的子模块标识。
+- `pageKey`：子模块内稳定页面/工作上下文，也是最小可见边界。
+- `actionKey`：系统内全局唯一业务命令，也是最小操作边界。
+- `departments[]`：开发、协作、审批和验收责任目录；每个子模块恰好一个 owner 部门。部门责任不产生员工访问权限。
+- `accessRoles[]`：模块 AI 建议的平台角色、页面和 Action 上限。它只用于管理员映射/确认，不会自动创建有效授权。
+- 用户组织归属为单一 `departmentId`，可拥有多个平台角色。原生模块的最终授权只从角色合并为 `applicationSlug/moduleKey/pageKey/actionKey` 权限树；跨部门协作通过增加角色实现，不通过多部门成员关系、部门直授或个人直授实现。
 - 稳定标识仅使用小写字母、数字、点、下划线和短横线，不随显示文案变化。
 
 ## 固定端点
@@ -33,7 +35,7 @@
 {
   "protocol": "zhuojian-subsystem",
   "version": 2,
-  "contractRevision": "2.3",
+  "contractRevision": "2.4",
   "enterprise": {"key": "aifabei", "name": "爱法贝"},
   "applicationSlug": "sample-review",
   "applicationName": "样品评审系统",
@@ -46,9 +48,13 @@
     "name": "样品评审",
     "route": "/sample-review",
     "departments": [
-      {"key": "design", "name": "设计部", "role": "owner", "pageKeys": ["sample_review.list"], "actionKeys": ["sample_review.query", "sample_review.create", "sample_review.update", "sample_review.delete", "sample_review.approve", "sample_review.export"]},
-      {"key": "production", "name": "生产部", "role": "collaborator", "pageKeys": ["sample_review.list"], "actionKeys": ["sample_review.query", "sample_review.update"]},
-      {"key": "quality", "name": "质量部", "role": "approver", "pageKeys": ["sample_review.list"], "actionKeys": ["sample_review.query", "sample_review.approve", "sample_review.export"]}
+      {"key": "design", "name": "设计部", "role": "owner"},
+      {"key": "production", "name": "生产部", "role": "collaborator"},
+      {"key": "quality", "name": "质量部", "role": "approver"}
+    ],
+    "accessRoles": [
+      {"roleKey": "sample_review.designer", "name": "样品设计负责人", "suggestedDepartmentKey": "design", "pageKeys": ["sample_review.list"], "actionKeys": ["sample_review.query", "sample_review.create", "sample_review.update"]},
+      {"roleKey": "sample_review.quality_approver", "name": "样品质量审批员", "suggestedDepartmentKey": "quality", "pageKeys": ["sample_review.list"], "actionKeys": ["sample_review.query", "sample_review.approve", "sample_review.export"]}
     ],
     "pages": [{
       "pageKey": "sample_review.list",
@@ -78,7 +84,20 @@
 }
 ```
 
-完整结构以 `schemas/manifest-v2.schema.json` 为准。部门声明是接入向导中的建议授权上限，不是模块自行颁发的权限；管理员确认后才生效。同步新增页面、Action 和事件时只登记为“待授权”；删除 Action 时平台停用目录项，不自动扩权。
+完整结构以 `schemas/manifest-v2.schema.json` 为准。部门声明只描述谁负责开发、协作和验收；`accessRoles` 是建议角色，不是模块自行颁发的权限。平台管理员或企业管理员将建议映射到平台角色并逐页确认 Action 后才生效。同步新增角色建议、页面、Action 和事件时只登记为“待授权”；删除 Action 时平台停用目录项，不自动扩权。
+
+## 角色授权模型
+
+平台员工只有一个组织部门，但可以有多个角色。一个角色保存完整权限树：
+
+```text
+applicationSlug
+└─ moduleKey
+   └─ pageKey: view
+      └─ actionKey: query/create/update/delete/export/approve
+```
+
+员工最终权限是全部启用角色权限树的并集。`departments[].role=owner` 仅表示该部门负责需求、开发验收或变更确认，不能替代平台角色授权。页面 `view` 与 Action 分开：看见页面不表示能修改数据，也不表示 AI 可以调用页面中的 Action。旧系统没有 v2.4 Manifest 时可以继续按整站 iframe 兼容授权，但必须在管理员界面标记为兼容模式。
 
 ## 双层鉴权
 
@@ -86,7 +105,7 @@
 
 灼见先检查 `moduleKey` 的 `view` 权限，再签发 `typ=zhuojian-sso` 短票据。模块验证签名、`iss=zhuojian-saas`、`aud=applicationSlug`、`typ`、`exp`、企业、用户、`moduleKey`、权限和一次性 `jti`。`redirect` 必须是站内相对路径且命中获授权页面。成功后建立 `HttpOnly; Secure; SameSite=Lax` 会话并 302 到不含票据的页面。
 
-v2.3 SSO 票据还必须包含管理员最终授权的页面和操作 allowlist，模块不得用 Manifest 的部门建议值替代平台最终授权：
+v2.4 SSO 票据还必须包含管理员基于平台角色计算出的最终页面和操作 allowlist，模块不得用 Manifest 的部门责任或 `accessRoles` 建议值替代平台最终授权：
 
 ```json
 {

@@ -13,9 +13,10 @@ description: "让管理员 AI 一次性初始化爱法贝企业 ECS，让业务 
 灼见 SaaS（中央控制面）
 └─ 爱法贝企业大模块（逻辑聚合）
    └─ 模块系统（独立域名、本地 Git、数据库和发布单元）
-      └─ 子模块（moduleKey，最小授权边界）
-         └─ 页面、数据、AI Action、事件
-            └─ 一个 owner 部门 + 多个协作/审批/使用部门
+      └─ 子模块（moduleKey）
+         └─ 页面（pageKey）与 Action（actionKey）
+            ├─ 一个 owner 部门 + 多个协作部门（开发与验收责任）
+            └─ 多个 accessRole（员工使用授权建议）
 ```
 
 模块业务数据始终留在模块自己的数据库。灼见只保存登记、Manifest、授权、Action 目录、审计、事件游标和必要索引；禁止直接连接模块数据库。
@@ -26,9 +27,9 @@ GitHub 和 Coolify 不属于本 Skill 的企业模块开发、部署或更新链
 
 原生模块必须同时实现：
 
-1. **Manifest**：声明子模块、参与部门建议、页面、Action 和事件。
+1. **Manifest**：声明子模块、参与部门责任、角色建议、页面、Action 和事件。
 2. **SSO**：接收灼见一次性 Ticket，建立模块自己的安全会话。
-3. **授权**：按企业、子模块、页面、Action、部门/岗位/工作组/用户双重校验。
+3. **授权**：原生系统只按角色计算 `applicationSlug → moduleKey → pageKey → actionKey`；用户可有多个角色，权限取并集。
 4. **页面上下文 Bridge**：向灼见上报当前页面、实体、筛选和选择摘要。
 5. **Action**：页面和 AI 通过同一业务服务完成查询、创建、修改、删除、审批和导出。
 6. **Event**：不同模块通过版本化、幂等事件交换业务变化，不共享数据库。
@@ -62,7 +63,9 @@ GitHub 和 Coolify 不属于本 Skill 的企业模块开发、部署或更新链
 
 - 固定端点：`/health`、Manifest、事件拉取、事件投递、Action 和 SSO。
 - Manifest `version` 保持整数 `2`，新增能力用 `contractRevision` 表示；按 `schemas/manifest-v2.schema.json` 输出。
-- 每个子模块恰好一个 owner 部门；每个参与部门必须显式声明 `pageKeys` 和 `actionKeys` 作为建议授权上限。平台管理员或企业管理员仍须确认，Manifest 不能自行扩权。
+- 每个子模块恰好一个 owner 部门；`departments[]` 只声明开发、协作、审批和验收责任，绝不直接授予员工权限。
+- 每个子模块必须声明 `accessRoles[]`，其中 `roleKey/pageKeys/actionKeys` 只是给管理员的角色建议。平台管理员或企业管理员确认并映射到平台角色后才生效；Manifest 不能自行扩权。
+- 一个用户只能归属一个组织部门，但可以拥有多个角色。部门回答“这个人属于哪里”和默认数据上下文；角色回答“这个人能看哪个大模块、子模块、页面，能执行哪些页面按钮和 AI Action”。跨部门协作通过增加角色实现，不得把用户挂到多个部门，也不得直接给部门或个人颁发原生模块权限。
 - 模块系统是部署边界，不是员工端唯一导航颗粒度。员工体验必须按“企业 → 子模块 → 页面”聚合；远端页面不重复灼见侧边栏、企业选择器或登录页。
 - SSO 会话必须保存灼见签发的 `pageKeys`、`actionKeys` 和 `pageAccess`。未授权路由返回 403；页面按钮和 `/api/ui/actions/*` 必须再次校验页面与 Action allowlist。
 - 页面按钮与 AI 调用同一个应用服务函数和权限判断。
@@ -88,7 +91,7 @@ python <skill>/scripts/e2e_acceptance.py --base-url https://<模块域名> --mod
 python <skill>/scripts/publish_subsystem.py --project-path <模块项目目录> --base-url https://<模块域名>
 ```
 
-前三项验证通过、容器和 Nginx 已切换到健康版本后，最后一项通过 `POST /api/v1/ecs-publisher/modules/register` 登记当前 Git commit 并同步 Manifest。首次发布和后续更新都部署同一本地 Git 仓库、同一 `applicationSlug`、域名、数据目录和接入密钥；新增子模块、页面、部门建议和 Action 默认为待授权。
+前三项验证通过、容器和 Nginx 已切换到健康版本后，最后一项通过 `POST /api/v1/ecs-publisher/modules/register` 登记当前 Git commit 并同步 Manifest。首次发布和后续更新都部署同一本地 Git 仓库、同一 `applicationSlug`、域名、数据目录和接入密钥；新增子模块、页面、角色建议和 Action 默认为待授权，参与部门变化不会自动改变员工权限。
 
 管理员只在每台 ECS 初始化一次：安装运行底座、配置通配 DNS/HTTPS策略、建立目录，并用管理员会话调用 `POST /api/v1/ecs-publisher/organizations/{organizationId}/runtimes`；平台只回显一次 Runtime 凭证，管理员 AI 将其写入 `0600` 文件。业务 AI 后续只能读取该文件完成登记，不获得平台管理员 Token，也不得要求用户提供 GitHub/Coolify账号或要求管理员逐项目配置基础设施。
 
@@ -108,4 +111,4 @@ python <skill>/scripts/publish_subsystem.py --project-path <模块项目目录> 
 
 ## 管理员接入回执
 
-最终只向业务用户输出：系统名称与入口、子模块、参与部门、页面、AI 操作及确认要求、健康状态、灼见登记/同步状态和尚缺外部条件。密钥只报告“已配置/待配置”，绝不回显值。
+最终只向业务用户输出：系统名称与入口、子模块、开发/验收责任部门、建议角色、页面、AI 操作及确认要求、健康状态、灼见登记/同步状态和尚缺外部条件。明确说明“建议角色待管理员映射和授权”；密钥只报告“已配置/待配置”，绝不回显值。

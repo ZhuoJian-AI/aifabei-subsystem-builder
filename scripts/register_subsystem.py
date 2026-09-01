@@ -48,7 +48,7 @@ def main() -> int:
     summary = {"status": "discovered", "name": discovery["suggested_name"], "slug": discovery["suggested_slug"], "modules": len(discovery.get("modules", []))}
     if not args.apply:
         print(json.dumps(summary, ensure_ascii=False))
-        print("尚未创建应用；管理员核对部门映射和默认不授权原则后，加 --apply 执行登记。")
+        print("尚未创建应用；管理员核对责任部门并确认 accessRoles 到平台角色的映射后，加 --apply 执行登记。")
         return 0
     created = call(
         urljoin(api, f"organizations/{args.organization_id}/applications"), admin_token, "POST",
@@ -60,7 +60,7 @@ def main() -> int:
     })
     synced = call(urljoin(api, f"applications/{app_id}/integration/sync"), admin_token, "POST")
     print(json.dumps({**summary, "status": "registered", "applicationId": app_id, "sync": synced.get("status"), "grants": "none"}, ensure_ascii=False))
-    print("应用已发现和同步，但没有自动授予任何部门权限。请管理员在权限页面确认。")
+    print("应用已发现和同步，但没有自动授权。请管理员在“角色与模块权限”中将 accessRoles 映射到平台角色，并逐页确认 Action。")
     return 0
 
 
