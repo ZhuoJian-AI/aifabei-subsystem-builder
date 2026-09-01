@@ -23,7 +23,7 @@
 | POST | `/api/integration/actions/{actionKey}` | 页面和 AI 共用业务命令出口 |
 | GET | `/api/integration/sso?ticket=&redirect=` | iframe 一次性票据换模块会话 |
 
-每个模块系统只有一个独立的 `ZHUOJIAN_INTEGRATION_SECRET`：Manifest 和事件拉取把它作为静态 Bearer Token；SSO、Action 和事件投递用同一密钥签发 60 秒 HS256 JWT。这个密钥只属于当前模块系统，不得跨系统复用，也不得复用灼见全局用户 JWT 密钥。管理员接入界面因此只需要填写一次“接入凭证”。
+每个模块系统只有一个独立的 `ZHUOJIAN_INTEGRATION_SECRET`：Manifest 和事件拉取把它作为静态 Bearer Token；SSO 使用 120 秒、严格一次性的 HS256 JWT，Action 和事件投递使用 60 秒 HS256 JWT。SSO Ticket 消费后必须立即建立模块会话并重定向到不含 Ticket 的业务路由；平台刷新或重新挂载 iframe 时必须重新签发，禁止缓存或复用启动 URL。这个密钥只属于当前模块系统，不得跨系统复用，也不得复用灼见全局用户 JWT 密钥。管理员接入界面因此只需要填写一次“接入凭证”。
 
 模块部署时还必须配置 `ZHUOJIAN_ORGANIZATION_ID`，并把它绑定到灼见中该企业的真实 organization UUID。所有 SSO、Action 和事件投递 JWT 都必须同时校验 `aud=applicationSlug` 与 `organizationId=ZHUOJIAN_ORGANIZATION_ID`；不能只检查“organizationId 非空”。
 
