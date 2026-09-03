@@ -5,7 +5,7 @@
 ## 两种边界
 
 ```text
-爱法贝企业大模块（灼见逻辑聚合）
+Alphabet 企业大模块（灼见逻辑聚合）
 ├─ 模块系统 A（applicationSlug；本地 Git/域名/数据库/发布边界，可不直接展示给员工）
 │  ├─ 子模块 A1（moduleKey；授权和导航边界）
 │  │  ├─ 页面 pageKey

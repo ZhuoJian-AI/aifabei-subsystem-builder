@@ -10,6 +10,7 @@
 - 生产容器只暴露一个 `127.0.0.1:<port>` 给 Nginx；数据库、Redis 和内部 API 不映射公网端口。
 - 部署前必须有干净的本地 Git commit。镜像使用 commit SHA 标识，成功版本写入发布记录，禁止使用裸 `latest` 作为回滚依据。
 - 模块 Secret 保存于 `/etc/zhuojian/apps/{applicationSlug}.env`，权限 `0600`，不进入项目目录、Git、日志或回复。
+- 需要持久文件时，部署入口按 `applicationSlug` 向 Alphabet 文件网关幂等创建或复用项目身份，将 `STORAGE_GATEWAY_URL` 和受限 `STORAGE_PROJECT_TOKEN` 写入本模块 Secret 文件。模块不能获得 OSS AccessKey，固定对象前缀为 `apps/<applicationSlug>/`。
 
 ## 首次发布
 
@@ -27,7 +28,7 @@
    /etc/nginx/conf.d/zhuojian-<enterprise>-<applicationSlug>.conf
    ```
 
-7. 首次生成独立 `ZHUOJIAN_INTEGRATION_SECRET` 和 `SESSION_SECRET`，写入 Secret 文件；后续更新复用，轮换必须与灼见协调，不能随部署自动更换。
+7. 首次生成独立 `ZHUOJIAN_INTEGRATION_SECRET` 和 `SESSION_SECRET`，写入 Secret 文件；若系统包含文件能力，同时创建或复用当前系统的存储项目令牌。后续更新全部复用；轮换必须与灼见或文件网关协调，不能随部署自动更换。
 8. 构建 `zhuojian/<enterprise>/<applicationSlug>:<commitSHA>`，启动新容器并挂载固定数据目录。先从回环地址检查 `/health`，再原子切换 Nginx；新容器不健康时恢复旧容器和旧镜像。
 9. 为 `https://<applicationSlug>.<domainSuffix>` 写入 Nginx Host 路由并签发/复用 HTTPS 证书。验证证书、`frame-ancestors`、Host 隔离、`/health` 和 Manifest。
 10. 使用 `scripts/publish_subsystem.py` 和 ECS Runtime 登记凭证向灼见登记当前 Git commit、`baseUrl`、`applicationSlug`、镜像引用和模块接入密钥；凭证只从环境档案引用的 Secret 文件读取，模块接入密钥只从环境变量读取，二者都不打印。灼见检查域名后缀、组织、健康与 Manifest 后创建/复用企业应用并同步，默认不创建任何 grant。
@@ -98,3 +99,4 @@ Authorization: Bearer <ECS Runtime 登记凭证>
 - `contract`：Manifest、SSO、Bridge、Action 或 Event 不合格，修业务代码或 Skill。
 - `registration`：登记凭证失效、域名超范围或平台接口缺失，模块保持运行但标记“未接入灼见”，不自动扩大凭证。
 - `storage`：ECS、本地 Git 或数据库存在丢失风险时停止发布并完成快照/备份；不得以远程 Git 缺失为由跳过备份。
+- `object-storage`：Bucket、网关或系统前缀授权未通过时，含文件能力的模块不得首次发布；禁止改成应用卷长期存储，也不得把 OSS 凭证交给业务 AI 排障。

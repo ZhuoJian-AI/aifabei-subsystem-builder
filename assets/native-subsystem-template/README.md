@@ -7,3 +7,5 @@
 3. 运行 `docker compose up --build`，确认 `/health` 和协议验收通过。
 
 生产数据保留在模块自己的数据库；不要连接或复制灼见 SaaS 数据库。
+
+如业务包含 Excel、Word、PPT、PDF、图片、音视频或其他持久文件，通过管理员提供的 Alphabet 文件网关上传和下载；数据库只保存 `objectKey` 与文件元数据。不得在代码或 `.env` 中配置 OSS AccessKey，也不得使用应用卷长期保存这些文件。

@@ -28,6 +28,11 @@ def source_files(root: Path):
 def main() -> int:
     parser = argparse.ArgumentParser(description="校验灼见原生模块的前端 Bridge 安全约束")
     parser.add_argument("--path", required=True, help="模块项目根目录")
+    parser.add_argument(
+        "--requires-object-storage",
+        action="store_true",
+        help="模块存在持久文件时启用；校验企业文件网关标记并拒绝 OSS AccessKey",
+    )
     args = parser.parse_args()
     root = Path(args.path).expanduser().resolve()
     if not root.is_dir():
@@ -35,6 +40,7 @@ def main() -> int:
 
     context_found = False
     page_scope_tokens: set[str] = set()
+    storage_markers: set[str] = set()
     failures: list[str] = []
     for path in source_files(root):
         text = path.read_text(encoding="utf-8", errors="replace")
@@ -42,6 +48,15 @@ def main() -> int:
         page_scope_tokens.update(
             token for token in ("pageKeys", "actionKeys", "pageAccess") if token in text
         )
+        storage_markers.update(
+            token for token in ("STORAGE_GATEWAY_URL", "STORAGE_PROJECT_TOKEN") if token in text
+        )
+        if args.requires_object_storage and re.search(
+            r"(?:ALIYUN|OSS)_(?:ACCESS|SECRET)[A-Z_]*KEY|AccessKeySecret|accessKeyId",
+            text,
+            re.IGNORECASE,
+        ):
+            failures.append(f"{path.relative_to(root)}: 业务源码禁止使用 OSS AccessKey")
         if WILDCARD_POST_MESSAGE.search(text):
             failures.append(f"{path.relative_to(root)}: postMessage targetOrigin 禁止使用 '*' ")
 
@@ -52,6 +67,13 @@ def main() -> int:
         failures.append(
             "未实现 v2.4 SSO 页面/操作 allowlist：" + ", ".join(sorted(missing_scope))
         )
+    if args.requires_object_storage:
+        missing_storage = {"STORAGE_GATEWAY_URL", "STORAGE_PROJECT_TOKEN"} - storage_markers
+        if missing_storage:
+            failures.append(
+                "持久文件必须使用 Alphabet 企业文件网关，未找到："
+                + ", ".join(sorted(missing_storage))
+            )
     if failures:
         print("SOURCE VALIDATION FAILED")
         for failure in failures:

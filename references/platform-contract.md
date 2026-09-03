@@ -4,7 +4,7 @@
 
 ## 标识和边界
 
-- `enterprise.key`：企业稳定标识，爱法贝为 `aifabei`。
+- `enterprise.key`：企业稳定标识，Alphabet 沿用 `aifabei`，不因显示名称变更而改写。
 - `applicationSlug`：独立模块系统、域名和发布单元。
 - `moduleKey`：业务大模块中的子模块标识。
 - `pageKey`：子模块内稳定页面/工作上下文，也是最小可见边界。
@@ -36,7 +36,7 @@
   "protocol": "zhuojian-subsystem",
   "version": 2,
   "contractRevision": "2.4",
-  "enterprise": {"key": "aifabei", "name": "爱法贝"},
+  "enterprise": {"key": "aifabei", "name": "Alphabet"},
   "applicationSlug": "sample-review",
   "applicationName": "样品评审系统",
   "bridgeVersion": 1,

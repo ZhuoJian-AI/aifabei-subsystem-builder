@@ -11,7 +11,7 @@
 
 ## 公网 ECS
 
-- 爱法贝测试环境默认域名为 `{applicationSlug}.aifabei.staging.zhuojianai.com`。
+- Alphabet 测试环境默认域名为 `{applicationSlug}.aifabei.staging.zhuojianai.com`。
 - 同一 ECS 通过 Nginx 按 Host 路由多个项目；每个模块系统一个域名，不为子模块单独配置域名。
 - DNS 必须先解析到目标 ECS；未解析时报告实际解析结果，不能用本机 hosts 冒充完成。
 - 只公开 80/443；SSH 只允许管理来源。数据库、Redis、内部 API 不映射公网端口。

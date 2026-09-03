@@ -38,7 +38,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="建立灼见原生模块系统骨架")
     parser.add_argument("--output", required=True, help="新的项目目录，必须为空或不存在")
     parser.add_argument("--company-slug", default="aifabei", help="企业稳定英文标识，默认 aifabei")
-    parser.add_argument("--company-name", default="爱法贝", help="企业显示名称，默认爱法贝")
+    parser.add_argument("--company-name", default="Alphabet", help="企业显示名称，默认 Alphabet")
     parser.add_argument("--application-slug", required=True)
     parser.add_argument("--application-name", required=True)
     parser.add_argument("--module-key", required=True)

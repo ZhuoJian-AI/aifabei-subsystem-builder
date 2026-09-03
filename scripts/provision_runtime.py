@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import stat
 from pathlib import Path
 from urllib.error import HTTPError, URLError
@@ -23,7 +24,7 @@ def call_json(url: str, token: str, body: dict) -> dict:
             "Authorization": f"Bearer {token}",
             "Accept": "application/json",
             "Content-Type": "application/json",
-            "User-Agent": "Aifabei-Runtime-Provisioner/1.0",
+            "User-Agent": "Alphabet-Runtime-Provisioner/1.0",
         },
     )
     try:
@@ -57,6 +58,28 @@ def _https_platform(value: str) -> str:
     return value.rstrip("/")
 
 
+def _storage_bucket(value: str) -> str:
+    value = value.strip()
+    if not re.fullmatch(r"[a-z0-9][a-z0-9-]{1,61}[a-z0-9]", value):
+        raise argparse.ArgumentTypeError("storage-bucket 必须是 3–63 位小写字母、数字或连字符")
+    return value
+
+
+def _storage_region(value: str) -> str:
+    value = value.strip()
+    if not re.fullmatch(r"[a-z0-9][a-z0-9-]+", value):
+        raise argparse.ArgumentTypeError("storage-region 必须是有效的阿里云地域 ID")
+    return value
+
+
+def _storage_gateway(value: str) -> str:
+    parsed = urlsplit(value)
+    loopback = parsed.hostname in {"127.0.0.1", "localhost", "::1"}
+    if not parsed.hostname or (parsed.scheme != "https" and not (parsed.scheme == "http" and loopback)):
+        raise argparse.ArgumentTypeError("storage-gateway-url 必须是 HTTPS，或 ECS 回环地址上的 HTTP")
+    return value.rstrip("/")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="管理员为一台企业 ECS 签发最小权限 Runtime 登记凭证"
@@ -76,6 +99,20 @@ def main() -> int:
     )
     parser.add_argument("--domain-suffix", required=True)
     parser.add_argument("--public-address")
+    parser.add_argument("--storage-bucket", required=True, type=_storage_bucket)
+    parser.add_argument("--storage-region", required=True, type=_storage_region)
+    parser.add_argument("--storage-gateway-url", required=True, type=_storage_gateway)
+    parser.add_argument(
+        "--storage-verified",
+        action="store_true",
+        required=True,
+        help="仅在管理员已完成真实上传、下载和跨系统隔离验收后传入",
+    )
+    parser.add_argument(
+        "--storage-credential-ref",
+        type=Path,
+        default=Path("/etc/zhuojian/oss-gateway.env"),
+    )
     parser.add_argument("--admin-token-env", default="ZHUOJIAN_ADMIN_TOKEN")
     parser.add_argument(
         "--profile-out",
@@ -117,6 +154,20 @@ def main() -> int:
     profile.setdefault("deployment", {})["registrationCredentialRef"] = str(
         args.credential_out
     )
+    profile.setdefault("capabilities", {})["objectStorage"] = True
+    profile["objectStorage"] = {
+        "provider": "aliyun-oss",
+        "mode": "gateway-signed-url",
+        "bucket": args.storage_bucket,
+        "region": args.storage_region,
+        "rootPrefix": "apps",
+        "gatewayBaseUrl": args.storage_gateway_url,
+        "credentialRef": str(args.storage_credential_ref),
+        "verified": args.storage_verified,
+    }
+    secret_refs = profile.setdefault("secretRefs", [])
+    if str(args.storage_credential_ref) not in secret_refs:
+        secret_refs.append(str(args.storage_credential_ref))
     secure_write(args.credential_out, credential + "\n")
     try:
         secure_write(
@@ -137,6 +188,7 @@ def main() -> int:
                 "runtimeKey": runtime.get("runtime_key") or args.runtime_key,
                 "organizationId": args.organization_id,
                 "domainSuffix": args.domain_suffix,
+                "objectStorage": "configured",
                 "profile": str(args.profile_out),
                 "credential": "installed",
             },
