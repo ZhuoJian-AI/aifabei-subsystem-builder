@@ -4,7 +4,7 @@
 
 ## 输入与边界
 
-- 允许输入：服务器公网地址与 root 账号密码，或已登录的云控制台会话；后续平台登记再需要 Alphabet 组织 UUID、域名后缀和灼见管理员会话。收到服务器地址与 root 凭证后，AI 按 [ECS 首次接入](ecs-first-access.md) 自动登录。管理员必须读取 [无 VPN 的 SSH 访问底座](no-vpn-ssh-access.md)，完成 SSH `443` 外部验收后才能交给小白。默认本地文件存储不要求 OSS；管理员可在现在或以后明确选择绑定 Alphabet OSS。
+- 允许输入：服务器公网地址与 root 账号密码，或已登录的云控制台会话；后续平台登记再需要 Alphabet 组织 UUID、域名后缀和灼见管理员会话。收到服务器地址与 root 凭证后，AI 按 [ECS 首次接入](ecs-first-access.md) 自动登录，并按 [SSH、VPN 与代理访问](ssh-access.md) 验证业务电脑实际使用的 VPN/代理路径。标准 SSH `22` 已通过时不必改造 Nginx 或安装 `sslh`；只有 `22` 受限且确有需要时才配置 SSH/HTTPS `443` 复用。默认本地文件存储不要求 OSS；管理员可在现在或以后明确选择绑定 Alphabet OSS。
 - 密码、SSH 密钥、模块接入密钥和 ECS 登记凭证不得进入本地 Git、环境档案、日志或回复。
 - 默认保留服务器全部既有容器、虚拟主机、数据库和数据目录。新资源使用 `zhuojian-<enterprise>-<application>` 标识。
 - 管理员 AI 只建立运行底座、域名规则和登记入口，不替业务 AI 编写业务流程。
@@ -16,7 +16,7 @@
 2. 确认通配 DNS `*.<企业域名后缀>` 解析到该 ECS。一个模块系统一个子域名；多个系统共享 ECS 时使用独立容器、回环端口和数据目录。
 3. 按 [Alphabet 文件存储与 OSS 迁移](object-storage.md) 初始化默认本地文件存储：建立固定数据目录、模块隔离、磁盘阈值和数据库加文件的一致性备份。只有管理员明确要求时才创建或绑定同地域私有 Bucket 并部署文件网关。
 4. 安装或核验 Git、Docker、Docker Compose、Nginx 和 HTTPS 证书工具。不得安装 GitHub CLI、GitHub App、Coolify Agent 或 Coolify Server 作为本流程依赖。
-5. 只公开 80/443；按 [无 VPN 的 SSH 访问底座](no-vpn-ssh-access.md) 让公网 `443` 同时承载 HTTPS 和 SSH，Nginx TLS 后端只监听回环 `8443`。数据库、Redis、文件网关和模块内部端口只绑定 Docker 网络或 `127.0.0.1`；普通 SSH `22` 可继续限制为管理员来源。
+5. Web 只公开 80/443；管理连接优先使用业务 VPN 可达的标准 SSH `22`。只有 `22` 在业务路径上不可用时，才按 [SSH、VPN 与代理访问](ssh-access.md) 让公网 `443` 同时承载 HTTPS 和 SSH，并把 Nginx TLS 后端改为回环 `8443`。数据库、Redis、文件网关和模块内部端口只绑定 Docker 网络或 `127.0.0.1`。
 6. 建立固定目录并限制权限：
 
    ```text
@@ -30,7 +30,7 @@
 
 7. 安装受控直接部署入口。它只能在以上目录内创建/更新指定 `applicationSlug`，分配回环端口、建立固定文件目录、构建不可变镜像、生成 Nginx 虚拟主机、检查 HTTPS/健康和回滚本次发布；OSS 模式才创建或复用存储项目身份。不得运行全局 Docker prune、删除未知卷或重启无关服务。
 8. 管理员在灼见为该企业签发一枚 **ECS Runtime 登记凭证**。优先运行 `scripts/provision_runtime.py`，让它调用平台接口并分别写入凭证和环境档案；不得复制到命令参数、终端回显或回复。凭证文件固定为 `/etc/zhuojian/runtime-registration.key`，权限为目录 `0700`、文件 `0600`。它只允许把该域名后缀下、该组织的健康模块登记/重新同步到灼见，不允许部署代码、管理服务器、授予权限或访问其他企业。
-9. 生成不含密钥的 `/etc/zhuojian/runtime.json`，然后从已经退出云控制台的外部 Codex 验证 SSH `443` Banner 和 root 密码登录；再用两个最小测试应用验证域名隔离、HTTPS、`/health`、Manifest、登记链路、本地上传/下载、目录隔离、磁盘阈值和重建容器后读取。OSS 模式再验证真实对象读写及跨系统前缀拒绝。测试资源使用独立名称和数据目录，不碰已有项目。
+9. 生成不含密钥的 `/etc/zhuojian/runtime.json`，然后从业务实际使用的外部 Codex（允许启用 VPN/代理）验证 SSH Banner 和 root 密码登录；再用两个最小测试应用验证域名隔离、HTTPS、`/health`、Manifest、登记链路、本地上传/下载、目录隔离、磁盘阈值和重建容器后读取。OSS 模式再验证真实对象读写及跨系统前缀拒绝。测试资源使用独立名称和数据目录，不碰已有项目。
 
 ## 环境档案
 
@@ -73,14 +73,14 @@
     "appPortRange": [18000, 18999]
   },
   "network": {
-    "publicPorts": [80, 443],
+    "publicPorts": [22, 80, 443],
     "privateServicePortsOnly": true,
     "managementAccess": {
-      "mode": "ssh-https-multiplex",
+      "mode": "standard-ssh",
       "host": "<ECS公网IP或域名>",
-      "connectionOrder": [22, 443],
-      "businessAiPort": 443,
-      "requiresVpn": false,
+      "connectionOrder": [22],
+      "businessAiPort": 22,
+      "requiresVpn": true,
       "requiresCloudConsole": false,
       "verified": true
     }
@@ -131,7 +131,8 @@ python <skill>/scripts/provision_runtime.py \
   --environment staging \
   --domain-suffix aifabei.staging.zhuojianai.com \
   --public-address <ECS公网IP> \
-  --management-access-mode ssh-https-multiplex \
+  --management-access-mode standard-ssh \
+  --management-access-requires-vpn \
   --management-access-verified \
   --storage-mode local \
   --storage-verified
@@ -160,7 +161,7 @@ POST  /api/v1/ecs-publisher/organizations/{organizationId}/runtimes/{runtimeId}/
 
 ## 验收与回滚
 
-- 验收：外部 Codex 不使用云控制台或 VPN 即可在 `443` 读取 SSH Banner 并通过交互式 root 密码登录，同时 HTTPS、通配 DNS、两个 Host 不串站、Docker 健康、Nginx 配置、数据库端口不公网暴露、ECS 登记凭证只能登记本企业且不会自动授权；本地文件目录固定挂载、权限隔离、磁盘阈值与一致性备份有效。OSS 模式追加检查 Bucket 私有且同地域、文件网关健康和跨系统对象拒绝。
+- 验收：外部 Codex 通过业务实际使用的网络路径（允许 VPN/代理）在标准 `22` 或已配置的 `443` 读取 SSH Banner，并通过交互式 root 密码登录；同时 HTTPS、通配 DNS、两个 Host 不串站、Docker 健康、Nginx 配置、数据库端口不公网暴露、ECS 登记凭证只能登记本企业且不会自动授权；本地文件目录固定挂载、权限隔离、磁盘阈值与一致性备份有效。OSS 模式追加检查 Bucket 私有且同地域、文件网关健康和跨系统对象拒绝。
 - 记录新增 DNS record ID、安全组 rule ID、Nginx 文件、容器、数据目录和证书域名。
 - 回滚只删除本次新增且带精确标识的测试容器、Nginx 文件和空测试目录；不删除已有 Git 仓库、业务数据或未知卷。
 - 本地 Git 和业务数据与 ECS 同盘时必须配置 ECS 快照或企业指定的异地备份；GitHub 不作为必需备份目标。

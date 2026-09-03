@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Probe direct SSH banners without sending or storing a password."""
+"""Probe SSH banners directly or through HTTP CONNECT without using a password."""
 
 from __future__ import annotations
 
@@ -8,6 +8,8 @@ import json
 import socket
 import time
 from dataclasses import asdict, dataclass
+
+from http_connect_tunnel import open_http_connect_tunnel, parse_proxy_url
 
 
 @dataclass(frozen=True)
@@ -49,6 +51,7 @@ def probe_ssh_banner(
     port: int,
     connect_timeout: float,
     banner_timeout: float,
+    proxy_url: str | None = None,
 ) -> ProbeResult:
     started = time.monotonic()
     sock: socket.socket | None = None
@@ -56,9 +59,19 @@ def probe_ssh_banner(
     banner = b""
     error = ""
     try:
-        sock = socket.create_connection((host, port), timeout=connect_timeout)
+        pending = b""
+        if proxy_url:
+            sock, pending = open_http_connect_tunnel(
+                proxy_url,
+                host,
+                port,
+                connect_timeout,
+            )
+        else:
+            sock = socket.create_connection((host, port), timeout=connect_timeout)
         reachable = True
         sock.settimeout(banner_timeout)
+        banner += pending
         while len(banner) < 255 and b"\n" not in banner:
             chunk = sock.recv(255 - len(banner))
             if not chunk:
@@ -97,7 +110,7 @@ def main() -> int:
     parser.add_argument(
         "--require-port",
         type=int,
-        help="管理员交付时通常要求 443 必须返回 SSH Banner",
+        help="仅在管理员明确要求固定端口时使用，例如验证已配置的 443 复用",
     )
     parser.add_argument("--connect-timeout", type=float, default=5.0)
     parser.add_argument(
@@ -106,6 +119,10 @@ def main() -> int:
         default=8.0,
         help="需覆盖 sslh 将无首包连接转给 SSH 的探测超时",
     )
+    parser.add_argument(
+        "--proxy-url",
+        help="可选的无认证 HTTP CONNECT 代理，例如 http://127.0.0.1:7897",
+    )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
@@ -113,16 +130,26 @@ def main() -> int:
         parser.error("超时时间必须大于 0")
     if args.require_port is not None and not 1 <= args.require_port <= 65535:
         parser.error("--require-port 必须在 1–65535")
+    if args.proxy_url:
+        try:
+            parse_proxy_url(args.proxy_url)
+        except ValueError as exc:
+            parser.error(str(exc))
 
-    results = [
-        probe_ssh_banner(
+    results: list[ProbeResult] = []
+    for port in args.ports:
+        result = probe_ssh_banner(
             args.host,
             port,
             args.connect_timeout,
             args.banner_timeout,
+            args.proxy_url,
         )
-        for port in args.ports
-    ]
+        results.append(result)
+        if result.ssh_banner and (
+            args.require_port is None or port == args.require_port
+        ):
+            break
     successful = [result.port for result in results if result.ssh_banner]
     selected_port = successful[0] if successful else None
     passed = bool(successful)
@@ -136,6 +163,7 @@ def main() -> int:
         "host": args.host,
         "selectedPort": selected_port,
         "requiredPort": args.require_port,
+        "route": "http-proxy" if args.proxy_url else "direct-or-transparent-vpn",
         "results": [asdict(result) for result in results],
     }
     if args.json:

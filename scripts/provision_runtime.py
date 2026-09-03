@@ -111,8 +111,14 @@ def main() -> int:
     parser.add_argument(
         "--management-access-mode",
         choices=("standard-ssh", "ssh-https-multiplex"),
-        default="ssh-https-multiplex",
-        help="默认让业务 AI 通过公网 443 使用标准 SSH，且 HTTPS 继续可用",
+        default="standard-ssh",
+        help="默认通过业务 VPN 使用 SSH 22；仅在需要时选择 443 与 HTTPS 复用",
+    )
+    parser.add_argument(
+        "--management-access-requires-vpn",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="业务 AI 的已验证 SSH 路径是否需要 VPN/受管代理；默认需要",
     )
     parser.add_argument(
         "--management-access-host",
@@ -223,7 +229,11 @@ def main() -> int:
     capabilities["objectStorage"] = args.storage_mode == "oss"
     capabilities["passwordSshAccess"] = True
     network = profile.setdefault("network", {})
-    network["publicPorts"] = [80, 443]
+    network["publicPorts"] = (
+        [80, 443]
+        if args.management_access_mode == "ssh-https-multiplex"
+        else [22, 80, 443]
+    )
     network["managementAccess"] = {
         "mode": args.management_access_mode,
         "host": management_host,
@@ -235,7 +245,7 @@ def main() -> int:
         "businessAiPort": (
             443 if args.management_access_mode == "ssh-https-multiplex" else 22
         ),
-        "requiresVpn": False,
+        "requiresVpn": args.management_access_requires_vpn,
         "requiresCloudConsole": False,
         "verified": args.management_access_verified,
     }
@@ -294,6 +304,7 @@ def main() -> int:
                 "organizationId": args.organization_id,
                 "domainSuffix": args.domain_suffix,
                 "managementAccess": args.management_access_mode,
+                "managementAccessRequiresVpn": args.management_access_requires_vpn,
                 "businessAiSshPort": network["managementAccess"]["businessAiPort"],
                 "fileStorage": args.storage_mode,
                 "objectStorage": (
