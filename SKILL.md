@@ -9,7 +9,9 @@ description: "让管理员 AI 一次性初始化 Alphabet 企业 ECS，让业务
 
 用户只需要说明业务、参与部门和期望结果。不要要求用户选择框架、写命令、配置 Docker/Nginx、注册 GitHub 或使用 Coolify；这些由 AI 完成，并用业务语言汇报。
 
-管理员首次接入服务器时，小白只需直接提供服务器公网地址、root 账号和密码，或提供已经登录的云控制台页面；这已经构成本次登录与初始化授权。AI 必须读取 [ECS 首次接入](references/ecs-first-access.md) 并自动完成登录：优先尝试公网 SSH，连接在密码校验前超时或拒绝时自动改走云控制台 Workbench，轻量应用服务器还可用命令助手自行诊断。不得把 SSH、端口、VPN、密钥对或命令行排障重新交给小白；只有所有可用登录路径都失败时，才报告唯一、具体且必须由用户完成的控制台动作。
+严格区分“管理员首次初始化”和“业务 AI 日常使用”。管理员首次初始化可以使用公网 SSH 或已经登录的云控制台，并必须按 [无 VPN 的 SSH 访问底座](references/no-vpn-ssh-access.md) 把公网 `443` 初始化为 HTTPS 与 SSH 共用入口。初始化完成后，业务负责人只需把服务器公网地址、root 账号和密码交给 Codex；AI 按 [ECS 首次接入](references/ecs-first-access.md) 自动尝试 SSH `22`、再尝试 SSH `443`，不得要求小白提供阿里云账号、控制台页面、VPN、RAM、密钥对或命令行操作。密码只在 SSH 交互提示中输入。
+
+`IP + root + 密码` 不能绕过完全不存在的网络路由。管理员验收必须从不持有云控制台会话的外部 Codex 运行 `scripts/validate_ssh_access.py --host <公网地址> --require-port 443`。如果连普通 TCP `443` 都不可达，管理员必须改用业务网络可达的服务器地域，或先部署真正的企业出站中继；不得把本机代理、云控制台或一次偶然成功当作“小白无 VPN 已就绪”。
 
 ## 固定架构
 
@@ -46,10 +48,10 @@ GitHub 和 Coolify 不属于本 Skill 的企业模块开发、部署或更新链
 
 根据用户现状自动选择，不把技术判断抛给小白：
 
-1. **管理员一次性初始化 ECS**：读取 [管理员与服务器初始化](references/admin-bootstrap.md) 和 [Alphabet 文件存储与 OSS 迁移](references/object-storage.md)，建立 Docker、本地 Git、Nginx、域名、HTTPS、安全规则、固定数据目录、磁盘阈值和备份，并运行 `scripts/provision_runtime.py` 安装最小权限登记凭证与无密钥环境档案。默认使用本地硬盘；只有管理员明确要求时才初始化 OSS 和文件网关。每台新 ECS 只做一次；不接入 GitHub 或 Coolify。
+1. **管理员一次性初始化 ECS**：读取 [管理员与服务器初始化](references/admin-bootstrap.md)、[无 VPN 的 SSH 访问底座](references/no-vpn-ssh-access.md) 和 [Alphabet 文件存储与 OSS 迁移](references/object-storage.md)，建立 Docker、本地 Git、Nginx、HTTPS/SSH `443` 共用入口、域名、安全规则、固定数据目录、磁盘阈值和备份，并运行 `scripts/provision_runtime.py` 安装最小权限登记凭证与无密钥环境档案。默认使用本地硬盘；只有管理员明确要求时才初始化 OSS 和文件网关。每台新 ECS 只做一次；不接入 GitHub 或 Coolify。
 2. **新建原生模块系统**：只有业务确实需要独立域名、数据库、故障隔离或发布周期时才选。读取 [原生聚合与扩展](references/native-aggregation.md)、[平台接入协议](references/platform-contract.md) 和 [ECS 直接发布](references/direct-ecs-deployment.md)，优先运行 `scripts/scaffold_subsystem.py` 建立标准骨架，再实现业务页面、数据库和 Action。
 3. **给现有系统增加子模块**：用户说“在这个模块里再加”“继续扩展当前系统”或新业务可沿用现有域名和数据库时优先选择。读取 [原生聚合与扩展](references/native-aggregation.md)，先运行 `scripts/inspect_subsystem.py --path <项目根目录> --json`；保留 `applicationSlug`、本地 Git、域名、接入密钥和数据卷，在同一 Manifest 的 `modules[]` 增加新的 `moduleKey`、页面和 Action。
-4. **修改已有子模块**：先运行 `scripts/inspect_subsystem.py`，保留数据和现有能力，以兼容方式升级 Manifest 与业务代码，并部署到原域名。
+4. **修改已有子模块**：先运行 `scripts/inspect_subsystem.py --path <项目根目录> --json`，保留数据和现有能力，以兼容方式升级 Manifest 与业务代码，并部署到原域名。
 5. **接入老系统**：只做 iframe、域名白名单和管理员授权；老系统未实现原生 SSO/Action 前，允许用户在 iframe 内额外登录一次，不伪装成已经打通数据。
 
 如果无法判断是否需要新系统，先检查现有 Manifest、本地项目和环境档案。能在现有业务边界内实现时默认增加 `moduleKey`；只有需要独立故障域、数据隔离、域名或发布周期时才新建 `applicationSlug`。
@@ -95,12 +97,13 @@ GitHub 和 Coolify 不属于本 Skill 的企业模块开发、部署或更新链
 ```text
 python <skill>/scripts/validate_source.py --path <模块项目目录>
 python <skill>/scripts/validate_storage_profile.py --runtime-profile /etc/zhuojian/runtime.json
+python <skill>/scripts/validate_ssh_access.py --host <ECS公网地址> --ports 22,443 --require-port 443
 python <skill>/scripts/validate_endpoint.py --base-url https://<模块域名>
 python <skill>/scripts/e2e_acceptance.py --base-url https://<模块域名> --module-key <moduleKey> --page-key <pageKey> --query-action <actionKey>
 python <skill>/scripts/publish_subsystem.py --project-path <模块项目目录> --base-url https://<模块域名>
 ```
 
-前四项验证通过、容器和 Nginx 已切换到健康版本后，最后一项通过 `POST /api/v1/ecs-publisher/modules/register` 登记当前 Git commit 并同步 Manifest。含持久文件时还必须运行 `validate_source.py --requires-file-storage` 并完成真实上传、下载、重建容器后读取及未授权访问拒绝测试；已启用 OSS 时追加 `--requires-object-storage`。首次发布和后续更新都部署同一本地 Git 仓库、同一 `applicationSlug`、域名、数据目录、存储键和接入密钥；新增子模块、页面、角色建议和 Action 默认为待授权，参与部门变化不会自动改变员工权限。
+前五项验证通过、容器和 Nginx 已切换到健康版本后，最后一项通过 `POST /api/v1/ecs-publisher/modules/register` 登记当前 Git commit 并同步 Manifest。含持久文件时还必须运行 `validate_source.py --requires-file-storage` 并完成真实上传、下载、重建容器后读取及未授权访问拒绝测试；已启用 OSS 时追加 `--requires-object-storage`。首次发布和后续更新都部署同一本地 Git 仓库、同一 `applicationSlug`、域名、数据目录、存储键和接入密钥；新增子模块、页面、角色建议和 Action 默认为待授权，参与部门变化不会自动改变员工权限。
 
 管理员只在每台 ECS 初始化一次：安装运行底座、配置通配 DNS/HTTPS 策略、建立固定数据目录、磁盘阈值和备份，并用管理员会话调用 `POST /api/v1/ecs-publisher/organizations/{organizationId}/runtimes`。默认本地存储不需要阿里云账号、RAM 或文件网关。管理员以后选择 OSS 时，再一次性绑定同地域私有 Bucket 和网关；迁移按文件清单、SHA-256、分批切换和回滚窗口执行。负责人不获得平台管理员 Token 或 OSS AccessKey，也不需要逐项目配置基础设施。
 

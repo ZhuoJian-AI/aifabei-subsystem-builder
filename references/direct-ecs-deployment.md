@@ -32,8 +32,8 @@
 7. 首次生成独立 `ZHUOJIAN_INTEGRATION_SECRET` 和 `SESSION_SECRET`，写入 Secret 文件。含文件能力时按环境档案注入本地存储配置；只有 OSS 模式才创建或复用项目令牌。后续更新复用原存储模式和稳定 `storageKey`；从硬盘迁移 OSS 必须按迁移清单和回滚窗口单独执行，不能夹带在普通发布中。
 8. 构建 `zhuojian/<enterprise>/<applicationSlug>:<commitSHA>`，启动新容器并挂载固定数据目录。先从回环地址检查 `/health`，再原子切换 Nginx；新容器不健康时恢复旧容器和旧镜像。
 9. 为 `https://<applicationSlug>.<domainSuffix>` 写入 Nginx Host 路由并签发/复用 HTTPS 证书。验证证书、`frame-ancestors`、Host 隔离、`/health` 和 Manifest。
-10. 使用 `scripts/publish_subsystem.py` 和 ECS Runtime 登记凭证向灼见登记当前 Git commit、`baseUrl`、`applicationSlug`、镜像引用和模块接入密钥；凭证只从环境档案引用的 Secret 文件读取，模块接入密钥只从环境变量读取，二者都不打印。灼见检查域名后缀、组织、健康与 Manifest 后创建/复用企业应用并同步，默认不创建任何 grant。
-11. 运行 `validate_endpoint.py` 和 `e2e_acceptance.py`，输出管理员接入回执。
+10. 运行 `validate_endpoint.py` 和 `e2e_acceptance.py`。任一项失败都不得登记为成功版本。
+11. 使用 `scripts/publish_subsystem.py` 和 ECS Runtime 登记凭证向灼见登记当前 Git commit、`baseUrl`、`applicationSlug`、镜像引用和模块接入密钥；凭证只从环境档案引用的 Secret 文件读取，模块接入密钥只从环境变量读取，二者都不打印。灼见检查域名后缀、组织、健康与 Manifest 后创建/复用企业应用并同步，默认不创建任何 grant；登记成功后才输出管理员接入回执。
 
 ## 后续更新
 

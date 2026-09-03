@@ -80,6 +80,15 @@ def _storage_gateway(value: str) -> str:
     return value.rstrip("/")
 
 
+def _management_host(value: str) -> str:
+    value = value.strip()
+    if not value or "://" in value or any(char.isspace() for char in value):
+        raise argparse.ArgumentTypeError(
+            "management-access-host 必须是公网 IP 或域名，不能包含协议和路径"
+        )
+    return value
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="管理员为一台企业 ECS 签发最小权限 Runtime 登记凭证"
@@ -98,7 +107,24 @@ def main() -> int:
         default="staging",
     )
     parser.add_argument("--domain-suffix", required=True)
-    parser.add_argument("--public-address")
+    parser.add_argument("--public-address", type=_management_host)
+    parser.add_argument(
+        "--management-access-mode",
+        choices=("standard-ssh", "ssh-https-multiplex"),
+        default="ssh-https-multiplex",
+        help="默认让业务 AI 通过公网 443 使用标准 SSH，且 HTTPS 继续可用",
+    )
+    parser.add_argument(
+        "--management-access-host",
+        type=_management_host,
+        help="默认复用 --public-address",
+    )
+    parser.add_argument(
+        "--management-access-verified",
+        action="store_true",
+        required=True,
+        help="仅在外部 Codex 已读取 SSH Banner 并用 root 密码真实登录后传入",
+    )
     parser.add_argument(
         "--storage-mode",
         choices=("local", "oss"),
@@ -146,6 +172,12 @@ def main() -> int:
         parser.error("磁盘阈值必须满足 1 <= warning < stop < 100")
     if args.storage_minimum_free_gib <= 0:
         parser.error("--storage-minimum-free-gib 必须大于 0")
+    management_host = args.management_access_host or args.public_address
+    if not management_host:
+        parser.error(
+            "必须提供 --public-address 或 --management-access-host，"
+            "用于业务 AI 的 SSH 入口"
+        )
     if args.storage_mode == "oss":
         missing = [
             name for name, value in (
@@ -189,6 +221,24 @@ def main() -> int:
     capabilities = profile.setdefault("capabilities", {})
     capabilities["fileStorage"] = True
     capabilities["objectStorage"] = args.storage_mode == "oss"
+    capabilities["passwordSshAccess"] = True
+    network = profile.setdefault("network", {})
+    network["publicPorts"] = [80, 443]
+    network["managementAccess"] = {
+        "mode": args.management_access_mode,
+        "host": management_host,
+        "connectionOrder": (
+            [22, 443]
+            if args.management_access_mode == "ssh-https-multiplex"
+            else [22]
+        ),
+        "businessAiPort": (
+            443 if args.management_access_mode == "ssh-https-multiplex" else 22
+        ),
+        "requiresVpn": False,
+        "requiresCloudConsole": False,
+        "verified": args.management_access_verified,
+    }
     if args.storage_mode == "local":
         profile["fileStorage"] = {
             "provider": "local-disk",
@@ -243,6 +293,8 @@ def main() -> int:
                 "runtimeKey": runtime.get("runtime_key") or args.runtime_key,
                 "organizationId": args.organization_id,
                 "domainSuffix": args.domain_suffix,
+                "managementAccess": args.management_access_mode,
+                "businessAiSshPort": network["managementAccess"]["businessAiPort"],
                 "fileStorage": args.storage_mode,
                 "objectStorage": (
                     "configured" if args.storage_mode == "oss" else "disabled"

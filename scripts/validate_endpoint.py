@@ -49,6 +49,8 @@ def main() -> int:
     token = os.environ.get(args.token_env, "")
 
     health = get_json(urljoin(base, "health"), token)
+    if health.get("status") != "ok":
+        raise SystemExit("/health 必须明确返回 status=ok。")
     manifest_url = urljoin(base, "api/integration/manifest")
     manifest = get_json(manifest_url, token)
     required_manifest = (
