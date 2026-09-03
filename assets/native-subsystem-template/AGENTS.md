@@ -6,4 +6,4 @@
 - 修改和删除要求 `expectedVersion`；高风险 Action 要求灼见确认声明和幂等 requestId。
 - 不提交 `.env`、密码、Token、私钥、生产数据或数据库文件。
 - 不删除已有数据卷；变更前后运行单元测试、协议验证和浏览器冒烟。
-- 持久文件只通过 `STORAGE_GATEWAY_URL` 和本系统的 `STORAGE_PROJECT_TOKEN` 访问 Alphabet 企业文件网关；数据库仅保存文件元数据和 `objectKey`，禁止使用 OSS AccessKey 或应用卷长期保存附件。
+- 持久文件只通过统一存储适配层访问。默认使用固定挂载的 `/data/files`，以后可切换 Alphabet OSS；数据库仅保存 `storageKey`、`storageBackend`、SHA-256 和文件元数据，禁止保存绝对路径、签名 URL 或 OSS AccessKey，也禁止写入容器可写层。

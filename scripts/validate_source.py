@@ -29,9 +29,14 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="校验灼见原生模块的前端 Bridge 安全约束")
     parser.add_argument("--path", required=True, help="模块项目根目录")
     parser.add_argument(
+        "--requires-file-storage",
+        action="store_true",
+        help="模块存在持久文件时启用；校验可迁移存储标记并拒绝 OSS AccessKey",
+    )
+    parser.add_argument(
         "--requires-object-storage",
         action="store_true",
-        help="模块存在持久文件时启用；校验企业文件网关标记并拒绝 OSS AccessKey",
+        help="环境已明确启用 OSS 时追加；校验企业文件网关标记",
     )
     args = parser.parse_args()
     root = Path(args.path).expanduser().resolve()
@@ -48,10 +53,13 @@ def main() -> int:
         page_scope_tokens.update(
             token for token in ("pageKeys", "actionKeys", "pageAccess") if token in text
         )
-        storage_markers.update(
-            token for token in ("STORAGE_GATEWAY_URL", "STORAGE_PROJECT_TOKEN") if token in text
-        )
-        if args.requires_object_storage and re.search(
+        storage_markers.update(token for token in (
+            "FILE_STORAGE_DRIVER",
+            "FILE_STORAGE_ROOT",
+            "STORAGE_GATEWAY_URL",
+            "STORAGE_PROJECT_TOKEN",
+        ) if token in text)
+        if (args.requires_file_storage or args.requires_object_storage) and re.search(
             r"(?:ALIYUN|OSS)_(?:ACCESS|SECRET)[A-Z_]*KEY|AccessKeySecret|accessKeyId",
             text,
             re.IGNORECASE,
@@ -67,11 +75,20 @@ def main() -> int:
         failures.append(
             "未实现 v2.4 SSO 页面/操作 allowlist：" + ", ".join(sorted(missing_scope))
         )
+    if args.requires_file_storage or args.requires_object_storage:
+        missing_storage = {
+            "FILE_STORAGE_DRIVER", "FILE_STORAGE_ROOT"
+        } - storage_markers
+        if missing_storage:
+            failures.append(
+                "持久文件必须使用可迁移存储适配层，未找到："
+                + ", ".join(sorted(missing_storage))
+            )
     if args.requires_object_storage:
         missing_storage = {"STORAGE_GATEWAY_URL", "STORAGE_PROJECT_TOKEN"} - storage_markers
         if missing_storage:
             failures.append(
-                "持久文件必须使用 Alphabet 企业文件网关，未找到："
+                "OSS 模式必须使用 Alphabet 企业文件网关，未找到："
                 + ", ".join(sorted(missing_storage))
             )
     if failures:

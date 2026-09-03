@@ -9,6 +9,10 @@ services:
       ZHUOJIAN_ORGANIZATION_ID: ${ZHUOJIAN_ORGANIZATION_ID:?}
       ZHUOJIAN_SAAS_ORIGINS: ${ZHUOJIAN_SAAS_ORIGINS:-https://ai-platform.staging.zhuojianai.com}
       DATABASE_PATH: /data/subsystem.db
+      FILE_STORAGE_DRIVER: ${FILE_STORAGE_DRIVER:-local}
+      FILE_STORAGE_ROOT: /data/files
+      STORAGE_GATEWAY_URL: ${STORAGE_GATEWAY_URL:-}
+      STORAGE_PROJECT_TOKEN: ${STORAGE_PROJECT_TOKEN:-}
     volumes:
       - ${ZHUOJIAN_DATA_DIR:?}:/data
     ports:

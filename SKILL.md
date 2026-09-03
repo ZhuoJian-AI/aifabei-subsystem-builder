@@ -1,6 +1,6 @@
 ---
 name: aifabei-subsystem-builder
-description: "让管理员 AI 一次性初始化 Alphabet 企业 ECS，让业务 AI 仅凭业务描述和本地 Git 新建、修改并直接部署跨部门子模块，同时按灼见六大契约接入 SaaS。用户提到 Alphabet 模块、企业 ECS、跨部门系统、AI CRUD、iframe 或灼见接入时使用。"
+description: "让管理员 AI 一次性初始化 Alphabet 企业 ECS，让业务 AI 仅凭业务描述和本地 Git 新建、修改并直接部署跨部门子模块；文件默认使用固定数据盘并保留迁移 OSS 的能力，同时按灼见六大契约接入 SaaS。用户提到 Alphabet 模块、企业 ECS、跨部门系统、AI CRUD、文件迁移、iframe 或灼见接入时使用。"
 ---
 
 # Alphabet 企业模块搭建
@@ -23,7 +23,7 @@ description: "让管理员 AI 一次性初始化 Alphabet 企业 ECS，让业务
 
 模块业务数据始终留在模块自己的数据库。灼见只保存登记、Manifest、授权、Action 目录、审计、事件游标和必要索引；禁止直接连接模块数据库。
 
-用户上传或系统生成的 Excel、Word、PPT、PDF、图片、音视频、压缩包和其他持久文件不进入数据库或 ECS 长期目录，而是进入管理员一次性初始化的 Alphabet 企业 OSS。一个 ECS 上的多个系统共用同一套企业文件底座，并按 `apps/<applicationSlug>/` 自动隔离；负责人不需要了解阿里云、Bucket、RAM、AccessKey 或对象前缀。完整规则见 [Alphabet 企业文件存储](references/object-storage.md)。
+用户上传或系统生成的 Excel、Word、PPT、PDF、图片、音视频、压缩包和其他持久文件不进入数据库或容器可写层。新环境默认进入模块独立的 ECS 固定数据目录；管理员以后可迁移到 Alphabet 企业 OSS。无论使用硬盘还是 OSS，业务代码必须经过同一存储适配层并保存稳定 `storageKey`，使前端和业务接口在迁移时不变。负责人不需要了解阿里云、Bucket、RAM、AccessKey 或服务器路径。完整规则及迁移步骤见 [Alphabet 文件存储与 OSS 迁移](references/object-storage.md)。
 
 GitHub 和 Coolify 不属于本 Skill 的企业模块开发、部署或更新链路。源码以企业 ECS 上的本地 Git 仓库为准，Docker 运行模块，Nginx 提供域名和 HTTPS。若需异地备份，使用 ECS 快照或企业指定的备份位置，不把远程 Git 作为业务用户前置条件。
 
@@ -44,7 +44,7 @@ GitHub 和 Coolify 不属于本 Skill 的企业模块开发、部署或更新链
 
 根据用户现状自动选择，不把技术判断抛给小白：
 
-1. **管理员一次性初始化 ECS**：读取 [管理员与服务器初始化](references/admin-bootstrap.md) 和 [Alphabet 企业文件存储](references/object-storage.md)，建立 Docker、本地 Git、Nginx、域名、HTTPS、安全规则、同地域私有 OSS Bucket 和受控文件网关，并运行 `scripts/provision_runtime.py` 安装最小权限登记凭证与无密钥环境档案。每台新 ECS 只做一次；不接入 GitHub 或 Coolify。
+1. **管理员一次性初始化 ECS**：读取 [管理员与服务器初始化](references/admin-bootstrap.md) 和 [Alphabet 文件存储与 OSS 迁移](references/object-storage.md)，建立 Docker、本地 Git、Nginx、域名、HTTPS、安全规则、固定数据目录、磁盘阈值和备份，并运行 `scripts/provision_runtime.py` 安装最小权限登记凭证与无密钥环境档案。默认使用本地硬盘；只有管理员明确要求时才初始化 OSS 和文件网关。每台新 ECS 只做一次；不接入 GitHub 或 Coolify。
 2. **新建原生模块系统**：只有业务确实需要独立域名、数据库、故障隔离或发布周期时才选。读取 [原生聚合与扩展](references/native-aggregation.md)、[平台接入协议](references/platform-contract.md) 和 [ECS 直接发布](references/direct-ecs-deployment.md)，优先运行 `scripts/scaffold_subsystem.py` 建立标准骨架，再实现业务页面、数据库和 Action。
 3. **给现有系统增加子模块**：用户说“在这个模块里再加”“继续扩展当前系统”或新业务可沿用现有域名和数据库时优先选择。读取 [原生聚合与扩展](references/native-aggregation.md)，先运行 `scripts/inspect_subsystem.py --path <项目根目录> --json`；保留 `applicationSlug`、本地 Git、域名、接入密钥和数据卷，在同一 Manifest 的 `modules[]` 增加新的 `moduleKey`、页面和 Action。
 4. **修改已有子模块**：先运行 `scripts/inspect_subsystem.py`，保留数据和现有能力，以兼容方式升级 Manifest 与业务代码，并部署到原域名。
@@ -62,7 +62,7 @@ GitHub 和 Coolify 不属于本 Skill 的企业模块开发、部署或更新链
 - 检查结果已有相符 `applicationSlug` 时，不得通过新目录、新域名或名称后缀绕开扩展；新增子模块必须沿用原系统并保持已有 `moduleKey`、页面路由、Action 和数据迁移兼容。
 - 每个项目必须是本地 Git 仓库；发布前提交本次修改并保持工作树干净。不得因为没有 GitHub 而省略版本、回滚和变更审查。
 - 管理员交付的环境档案必须明确目标 ECS、域名后缀、资源限制、部署目录和登记凭证引用。业务 AI 不得把服务器密码、接入密钥或登记凭证写入 Git、日志或回复。
-- 业务需求只要出现附件、上传、下载、导入、导出、图片、音视频或办公文档，就自动采用企业文件网关；不要询问负责人是否使用 OSS。缺少已验证的 `objectStorage` 环境档案时，只向管理员报告“Alphabet 企业文件存储待初始化”，不得让负责人登录阿里云或创建 RAM。
+- 业务需求只要出现附件、上传、下载、导入、导出、图片、音视频或办公文档，就自动实现统一存储适配层；不要询问负责人选择硬盘还是 OSS。读取环境档案：`local-managed` 时使用固定数据目录，`oss-gateway` 时使用文件网关。两种模式都未验证时只向管理员报告“文件存储待初始化”，不得让负责人登录阿里云、创建 RAM 或手工设置路径。
 
 ## 原生模块必须满足
 
@@ -80,7 +80,7 @@ GitHub 和 Coolify 不属于本 Skill 的企业模块开发、部署或更新链
 - iframe Bridge 只发送当前页面和选中实体摘要，不传 Token、Cookie、密码或整表数据；`postMessage` 禁止使用 `"*"`。
 - 跨系统数据流使用版本化事件；目标系统按 `eventId` 幂等消费，不共享数据库。事件 `sequence` 必须跨容器/数据库重建仍单调不回退。
 - 生产镜像只安装运行时依赖；测试与 Playwright 依赖拆到开发依赖文件；Dockerfile 自带不依赖额外系统包的 `/health` 检查。
-- 含持久文件的系统必须通过 `STORAGE_GATEWAY_URL` 和本系统专属 `STORAGE_PROJECT_TOKEN` 申请短时上传、下载或删除授权；数据库只保存 `objectKey`、文件名、MIME、大小、校验和及业务归属。OSS 或网关不可用时明确失败，禁止静默回退到 ECS 长期目录。
+- 含持久文件的系统必须通过统一存储适配层读写。默认本地模式使用 `FILE_STORAGE_DRIVER=local` 和 `FILE_STORAGE_ROOT=/data/files`；OSS 模式才使用 `STORAGE_GATEWAY_URL` 和本系统专属 `STORAGE_PROJECT_TOKEN`。数据库只保存 `storageKey`、`storageBackend`、文件名、MIME、大小、SHA-256 及业务归属，不保存绝对路径或签名 URL。任一模式故障时明确失败，禁止静默切换后端。
 
 ## 本地 Git 与 ECS 直接部署
 
@@ -98,16 +98,17 @@ python <skill>/scripts/e2e_acceptance.py --base-url https://<模块域名> --mod
 python <skill>/scripts/publish_subsystem.py --project-path <模块项目目录> --base-url https://<模块域名>
 ```
 
-前三项验证通过、容器和 Nginx 已切换到健康版本后，最后一项通过 `POST /api/v1/ecs-publisher/modules/register` 登记当前 Git commit 并同步 Manifest。含持久文件时还必须运行 `validate_source.py --requires-object-storage` 并完成真实上传、下载验收。首次发布和后续更新都部署同一本地 Git 仓库、同一 `applicationSlug`、域名、数据目录、对象存储前缀和接入密钥；新增子模块、页面、角色建议和 Action 默认为待授权，参与部门变化不会自动改变员工权限。
+前四项验证通过、容器和 Nginx 已切换到健康版本后，最后一项通过 `POST /api/v1/ecs-publisher/modules/register` 登记当前 Git commit 并同步 Manifest。含持久文件时还必须运行 `validate_source.py --requires-file-storage` 并完成真实上传、下载、重建容器后读取及未授权访问拒绝测试；已启用 OSS 时追加 `--requires-object-storage`。首次发布和后续更新都部署同一本地 Git 仓库、同一 `applicationSlug`、域名、数据目录、存储键和接入密钥；新增子模块、页面、角色建议和 Action 默认为待授权，参与部门变化不会自动改变员工权限。
 
-管理员只在每台 ECS 初始化一次：安装运行底座、配置通配 DNS/HTTPS 策略、建立目录、创建或绑定 Alphabet 同地域私有 OSS Bucket、部署文件网关，并用管理员会话调用 `POST /api/v1/ecs-publisher/organizations/{organizationId}/runtimes`。业务 AI 后续只读取无密钥档案；直接部署入口为每个 `applicationSlug` 幂等创建独立对象前缀和项目令牌。负责人不获得平台管理员 Token 或 OSS AccessKey，也不需要管理员逐项目配置基础设施。
+管理员只在每台 ECS 初始化一次：安装运行底座、配置通配 DNS/HTTPS 策略、建立固定数据目录、磁盘阈值和备份，并用管理员会话调用 `POST /api/v1/ecs-publisher/organizations/{organizationId}/runtimes`。默认本地存储不需要阿里云账号、RAM 或文件网关。管理员以后选择 OSS 时，再一次性绑定同地域私有 Bucket 和网关；迁移按文件清单、SHA-256、分批切换和回滚窗口执行。负责人不获得平台管理员 Token 或 OSS AccessKey，也不需要逐项目配置基础设施。
 
 ## 失败处理
 
 - 模板或说明歧义：修本 Skill、Schema、模板或验证脚本，再从空目录重测。
 - 平台鉴权、Manifest、页面上下文、Action、事件或自动登记缺口：修 `ai-platform` 契约和测试，再重测。
 - DNS、HTTPS、Nginx、Docker 或服务器资源问题：修管理员初始化/直接部署流程，不把服务器特例硬编码进业务代码。
-- OSS Bucket、文件网关、系统前缀或签名权限未验证：停止含文件能力的首次发布，修管理员底座；不得把 AccessKey 交给业务 AI，也不得以 ECS 长期目录代替。
+- 本地固定数据目录、权限、磁盘阈值或备份未验证：停止含文件能力的首次发布，修管理员底座；不得写入容器可写层或公开静态目录。
+- 环境明确选择 OSS 但 Bucket、文件网关、系统前缀或签名权限未验证：停止发布或迁移，不得把 AccessKey 交给业务 AI，也不得静默改回本地模式。
 - 新版本构建、启动或健康检查失败：保持数据目录，恢复上一健康 Git commit 对应的不可变镜像；禁止清空数据库解决问题。
 
 ## 冷启动角色与隔离
@@ -119,4 +120,4 @@ python <skill>/scripts/publish_subsystem.py --project-path <模块项目目录> 
 
 ## 管理员接入回执
 
-最终只向业务用户输出：系统名称与入口、子模块、开发/验收责任部门、建议角色、页面、AI 操作及确认要求、健康状态、灼见登记/同步状态、文件能力状态和尚缺外部条件。明确说明“建议角色待管理员映射和授权”；Bucket、对象前缀和密钥只报告“已配置/待配置”，绝不向负责人展示技术值。
+最终只向业务用户输出：系统名称与入口、子模块、开发/验收责任部门、建议角色、页面、AI 操作及确认要求、健康状态、灼见登记/同步状态、文件能力状态和尚缺外部条件。明确说明“建议角色待管理员映射和授权”；只用“本地文件存储已就绪”“OSS 已就绪”或“文件存储待管理员处理”描述状态，绝不向负责人展示服务器路径、Bucket、对象前缀或密钥。

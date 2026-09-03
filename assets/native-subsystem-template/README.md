@@ -8,4 +8,4 @@
 
 生产数据保留在模块自己的数据库；不要连接或复制灼见 SaaS 数据库。
 
-如业务包含 Excel、Word、PPT、PDF、图片、音视频或其他持久文件，通过管理员提供的 Alphabet 文件网关上传和下载；数据库只保存 `objectKey` 与文件元数据。不得在代码或 `.env` 中配置 OSS AccessKey，也不得使用应用卷长期保存这些文件。
+如业务包含 Excel、Word、PPT、PDF、图片、音视频或其他持久文件，统一通过存储适配层上传和下载。默认保存到固定挂载的 `/data/files`，数据库只保存 `storageKey`、`storageBackend`、SHA-256 与文件元数据；以后迁移 OSS 时业务接口和前端 URL 不变。不得在代码或 `.env` 中配置 OSS AccessKey，也不得把文件写入容器可写层或公开静态目录。

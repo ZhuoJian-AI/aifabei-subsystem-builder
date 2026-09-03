@@ -8,7 +8,7 @@ import json
 import os
 import re
 import stat
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
@@ -99,9 +99,23 @@ def main() -> int:
     )
     parser.add_argument("--domain-suffix", required=True)
     parser.add_argument("--public-address")
-    parser.add_argument("--storage-bucket", required=True, type=_storage_bucket)
-    parser.add_argument("--storage-region", required=True, type=_storage_region)
-    parser.add_argument("--storage-gateway-url", required=True, type=_storage_gateway)
+    parser.add_argument(
+        "--storage-mode",
+        choices=("local", "oss"),
+        default="local",
+        help="默认 local；只有管理员已完成 OSS 网关时选择 oss",
+    )
+    parser.add_argument(
+        "--local-storage-root",
+        type=Path,
+        default=Path("/srv/zhuojian/data"),
+    )
+    parser.add_argument("--storage-warning-used-percent", type=int, default=80)
+    parser.add_argument("--storage-stop-upload-used-percent", type=int, default=90)
+    parser.add_argument("--storage-minimum-free-gib", type=float, default=5)
+    parser.add_argument("--storage-bucket", type=_storage_bucket)
+    parser.add_argument("--storage-region", type=_storage_region)
+    parser.add_argument("--storage-gateway-url", type=_storage_gateway)
     parser.add_argument(
         "--storage-verified",
         action="store_true",
@@ -125,6 +139,24 @@ def main() -> int:
         default=Path("/etc/zhuojian/runtime-registration.key"),
     )
     args = parser.parse_args()
+
+    if not PurePosixPath(args.local_storage_root.as_posix()).is_absolute():
+        parser.error("--local-storage-root 必须是绝对路径")
+    if not 1 <= args.storage_warning_used_percent < args.storage_stop_upload_used_percent < 100:
+        parser.error("磁盘阈值必须满足 1 <= warning < stop < 100")
+    if args.storage_minimum_free_gib <= 0:
+        parser.error("--storage-minimum-free-gib 必须大于 0")
+    if args.storage_mode == "oss":
+        missing = [
+            name for name, value in (
+                ("--storage-bucket", args.storage_bucket),
+                ("--storage-region", args.storage_region),
+                ("--storage-gateway-url", args.storage_gateway_url),
+            )
+            if value in (None, "")
+        ]
+        if missing:
+            parser.error("OSS 模式缺少参数：" + ", ".join(missing))
 
     admin_token = os.getenv(args.admin_token_env, "").strip()
     if not admin_token:
@@ -154,19 +186,42 @@ def main() -> int:
     profile.setdefault("deployment", {})["registrationCredentialRef"] = str(
         args.credential_out
     )
-    profile.setdefault("capabilities", {})["objectStorage"] = True
-    profile["objectStorage"] = {
-        "provider": "aliyun-oss",
-        "mode": "gateway-signed-url",
-        "bucket": args.storage_bucket,
-        "region": args.storage_region,
-        "rootPrefix": "apps",
-        "gatewayBaseUrl": args.storage_gateway_url,
-        "credentialRef": str(args.storage_credential_ref),
-        "verified": args.storage_verified,
-    }
+    capabilities = profile.setdefault("capabilities", {})
+    capabilities["fileStorage"] = True
+    capabilities["objectStorage"] = args.storage_mode == "oss"
+    if args.storage_mode == "local":
+        profile["fileStorage"] = {
+            "provider": "local-disk",
+            "mode": "local-managed",
+            "root": args.local_storage_root.as_posix(),
+            "pathTemplate": "{applicationSlug}/files",
+            "warningUsedPercent": args.storage_warning_used_percent,
+            "stopUploadUsedPercent": args.storage_stop_upload_used_percent,
+            "minimumFreeGiB": args.storage_minimum_free_gib,
+            "verified": args.storage_verified,
+        }
+        profile.pop("objectStorage", None)
+    else:
+        profile["fileStorage"] = {
+            "provider": "aliyun-oss",
+            "mode": "oss-gateway",
+            "verified": args.storage_verified,
+        }
+        profile["objectStorage"] = {
+            "provider": "aliyun-oss",
+            "mode": "gateway-signed-url",
+            "bucket": args.storage_bucket,
+            "region": args.storage_region,
+            "rootPrefix": "apps",
+            "gatewayBaseUrl": args.storage_gateway_url,
+            "credentialRef": str(args.storage_credential_ref),
+            "verified": args.storage_verified,
+        }
     secret_refs = profile.setdefault("secretRefs", [])
-    if str(args.storage_credential_ref) not in secret_refs:
+    if (
+        args.storage_mode == "oss"
+        and str(args.storage_credential_ref) not in secret_refs
+    ):
         secret_refs.append(str(args.storage_credential_ref))
     secure_write(args.credential_out, credential + "\n")
     try:
@@ -188,7 +243,10 @@ def main() -> int:
                 "runtimeKey": runtime.get("runtime_key") or args.runtime_key,
                 "organizationId": args.organization_id,
                 "domainSuffix": args.domain_suffix,
-                "objectStorage": "configured",
+                "fileStorage": args.storage_mode,
+                "objectStorage": (
+                    "configured" if args.storage_mode == "oss" else "disabled"
+                ),
                 "profile": str(args.profile_out),
                 "credential": "installed",
             },
