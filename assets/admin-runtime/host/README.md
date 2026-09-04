@@ -60,11 +60,29 @@ zhuojian-runtime prepare <applicationSlug>
 zhuojian-runtime certify <applicationSlug> [--email admin@example.com]
 zhuojian-runtime deploy <applicationSlug> --issue-certificate
 zhuojian-runtime status <applicationSlug>
+zhuojian-runtime verify-release <applicationSlug>
 zhuojian-runtime rotate-app-storage <applicationSlug> --grace-seconds 300
 zhuojian-runtime rollback <applicationSlug> [--commit <full-sha>]
 zhuojian-runtime backup <applicationSlug>
 zhuojian-runtime restore <applicationSlug> --archive <exact-path> --confirm-application <applicationSlug>
 ```
+
+`deploy` and `rollback` close the matching SaaS release before switching the
+container and return `awaiting_platform_registration`. Run
+`scripts/publish_subsystem.py` immediately afterward (`--use-running-release`
+after rollback). The root-only Runtime credential is used only for this gate
+and is never printed or passed to Docker.
+
+Every code switch first records a durable `releaseSwitch` transaction in
+`release.json`, including the exact old/new commit images, deterministic
+rollback container, and previous Nginx content. Any later command for that
+application restores the old container and Nginx after an interrupted switch,
+checks the old health endpoint, and only then cancels the matching SaaS intent.
+The marker is retained whenever Docker, Nginx, or SaaS cannot be reconciled, so
+employee access stays fail-closed across SIGKILL, daemon restart, and power loss.
+Before publication, `verify-release` requires the canonical container to be
+Running and requires its commit label and Docker `Config.Image` to match
+`release.current` exactly.
 
 After the gateway installer has created its private Docker network, root-only
 management command and verified credential file, the administrator performs the

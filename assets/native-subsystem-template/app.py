@@ -7,16 +7,19 @@ import json
 import logging
 import os
 import re
+import secrets
 import shutil
 import sqlite3
 import stat
 import tempfile
 import threading
 import time
+from collections.abc import Callable
 from contextlib import contextmanager, suppress
 from datetime import datetime, timedelta, timezone
+from http.cookies import CookieError, SimpleCookie
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 from urllib.parse import quote, urlsplit
 from uuid import UUID, uuid4
 
@@ -25,12 +28,16 @@ try:
 except ImportError:  # pragma: no cover - Windows-only development fallback
     fcntl = None
 
+import httpx
 import jwt
 from fastapi import FastAPI, Header, HTTPException, Request, Response
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import (
+    FileResponse,
+    JSONResponse,
+    RedirectResponse,
+    StreamingResponse,
+)
 from starlette.concurrency import run_in_threadpool
-from starlette.middleware.sessions import SessionMiddleware
-
 from storage import (
     InvalidStorageKey,
     StorageAuthorizationError,
@@ -54,7 +61,10 @@ PAGES = {
     for module in MANIFEST["modules"] for page in module["pages"]
 }
 DB_PATH = os.getenv("DATABASE_PATH", str(ROOT / "subsystem.db"))
-INTEGRATION_SECRET = os.getenv("ZHUOJIAN_INTEGRATION_SECRET", "")
+MANIFEST_ACCESS_TOKEN = os.getenv("ZHUOJIAN_MANIFEST_ACCESS_TOKEN", "")
+SSO_EXCHANGE_TOKEN = os.getenv("ZHUOJIAN_SSO_EXCHANGE_TOKEN", "")
+ACTION_SIGNING_SECRET = os.getenv("ZHUOJIAN_ACTION_SIGNING_SECRET", "")
+EVENT_SIGNING_SECRET = os.getenv("ZHUOJIAN_EVENT_SIGNING_SECRET", "")
 SESSION_SECRET = os.getenv("SESSION_SECRET", "")
 EXPECTED_ORGANIZATION_ID = os.getenv("ZHUOJIAN_ORGANIZATION_ID", "")
 
@@ -88,6 +98,12 @@ PUBLIC_ORIGIN = canonical_https_origin(
     os.getenv("ZHUOJIAN_PUBLIC_ORIGIN", ""),
     "ZHUOJIAN_PUBLIC_ORIGIN",
 )
+SAAS_ORIGIN = canonical_https_origin(
+    os.getenv("ZHUOJIAN_SAAS_ORIGIN", ""),
+    "ZHUOJIAN_SAAS_ORIGIN",
+)
+SSO_EXCHANGE_URL = f"{SAAS_ORIGIN}/api/v1/subsystem-sso/exchange"
+SSO_SESSION_CHECK_URL = f"{SAAS_ORIGIN}/api/v1/subsystem-sso/session-check"
 SAAS_ORIGINS = [
     canonical_https_origin(item.strip(), "ZHUOJIAN_SAAS_ORIGINS")
     for item in os.getenv(
@@ -135,7 +151,6 @@ DELETION_RETRY_SECONDS = 5
 STORAGE_RECOVERY_BATCH_SIZE = 10
 STORAGE_RECOVERY_LOCK_YIELD_SECONDS = 0.1
 JWT_MAX_LIFETIME_SECONDS = {
-    "zhuojian-sso": 120,
     "zhuojian-action": 60,
     "zhuojian-event": 60,
 }
@@ -143,17 +158,148 @@ LOGGER = logging.getLogger(__name__)
 _UPLOAD_THREAD_LOCK = threading.Lock()
 DELETION_RECOVERY_TASK: asyncio.Task[None] | None = None
 
-if len(INTEGRATION_SECRET) < 32 or len(SESSION_SECRET) < 32 or not EXPECTED_ORGANIZATION_ID:
+PROJECT_CREDENTIALS = {
+    "ZHUOJIAN_MANIFEST_ACCESS_TOKEN": (MANIFEST_ACCESS_TOKEN, "zjmf_"),
+    "ZHUOJIAN_SSO_EXCHANGE_TOKEN": (SSO_EXCHANGE_TOKEN, "zjss_"),
+    "ZHUOJIAN_ACTION_SIGNING_SECRET": (ACTION_SIGNING_SECRET, "zjac_"),
+    "ZHUOJIAN_EVENT_SIGNING_SECRET": (EVENT_SIGNING_SECRET, "zjev_"),
+}
+invalid_credentials = [
+    name
+    for name, (value, prefix) in PROJECT_CREDENTIALS.items()
+    if len(value) < 40 or not value.startswith(prefix)
+]
+if invalid_credentials or len(SESSION_SECRET) < 32 or not EXPECTED_ORGANIZATION_ID:
     raise RuntimeError(
-        "ZHUOJIAN_INTEGRATION_SECRET and SESSION_SECRET must each contain at least 32 characters, "
-        "and ZHUOJIAN_ORGANIZATION_ID is required"
+        "Runtime must inject four valid v2.5 project credentials, a SESSION_SECRET of at "
+        "least 32 characters, and ZHUOJIAN_ORGANIZATION_ID"
     )
 
+
+class ServerSideSessionMiddleware:
+    """Keep claims server-side; the browser receives only a partitioned opaque SID."""
+
+    cookie_name = "zjsid"
+    max_age = 8 * 60 * 60
+
+    def __init__(self, app):
+        self.app = app
+
+    @staticmethod
+    def _digest(session_id: str) -> str:
+        return hashlib.sha256(session_id.encode()).hexdigest()
+
+    @staticmethod
+    def _signed_value(session_id: str) -> str:
+        signature = hmac.new(
+            SESSION_SECRET.encode(), session_id.encode(), hashlib.sha256
+        ).hexdigest()
+        return f"{session_id}.{signature}"
+
+    @staticmethod
+    def _verified_id(value: str | None) -> str | None:
+        if not value or "." not in value:
+            return None
+        session_id, signature = value.rsplit(".", 1)
+        if not re.fullmatch(r"[A-Za-z0-9_-]{32,128}", session_id):
+            return None
+        expected = hmac.new(
+            SESSION_SECRET.encode(), session_id.encode(), hashlib.sha256
+        ).hexdigest()
+        return session_id if hmac.compare_digest(signature, expected) else None
+
+    def _cookie_id(self, scope) -> str | None:
+        headers = dict(scope.get("headers") or [])
+        cookie = SimpleCookie()
+        try:
+            cookie.load(headers.get(b"cookie", b"").decode("latin-1"))
+        except CookieError:
+            return None
+        morsel = cookie.get(self.cookie_name)
+        return self._verified_id(morsel.value if morsel else None)
+
+    def _load(self, session_id: str | None) -> dict:
+        if session_id is None:
+            return {}
+        now = int(time.time())
+        try:
+            with db() as connection:
+                connection.execute("DELETE FROM browser_sessions WHERE expires_at<=?", (now,))
+                row = connection.execute(
+                    "SELECT data FROM browser_sessions WHERE session_hash=? AND expires_at>?",
+                    (self._digest(session_id), now),
+                ).fetchone()
+        except sqlite3.Error:
+            return {}
+        if row is None:
+            return {}
+        try:
+            value = json.loads(row["data"])
+        except (TypeError, ValueError):
+            return {}
+        return value if isinstance(value, dict) else {}
+
+    def _save(self, session_id: str, value: dict) -> None:
+        encoded = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+        if len(encoded.encode()) > 512 * 1024:
+            raise RuntimeError("SSO session exceeds the server-side size limit")
+        with db() as connection:
+            connection.execute(
+                """
+                INSERT INTO browser_sessions(session_hash,data,expires_at)
+                VALUES(?,?,?)
+                ON CONFLICT(session_hash) DO UPDATE SET
+                  data=excluded.data,expires_at=excluded.expires_at
+                """,
+                (self._digest(session_id), encoded, int(time.time()) + self.max_age),
+            )
+
+    def _delete(self, session_id: str) -> None:
+        with db() as connection:
+            connection.execute(
+                "DELETE FROM browser_sessions WHERE session_hash=?",
+                (self._digest(session_id),),
+            )
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        session_id = self._cookie_id(scope)
+        scope["session"] = self._load(session_id)
+
+        async def send_with_session(message):
+            nonlocal session_id
+            if message["type"] == "http.response.start":
+                rotate = bool(scope.pop("rotate_session", False))
+                if rotate and session_id:
+                    self._delete(session_id)
+                    session_id = None
+                value = scope["session"]
+                headers = list(message.get("headers") or [])
+                if value:
+                    session_id = session_id or secrets.token_urlsafe(32)
+                    self._save(session_id, value)
+                    cookie = (
+                        f"{self.cookie_name}={self._signed_value(session_id)}; Path=/; "
+                        f"Max-Age={self.max_age}; HttpOnly; Secure; SameSite=None; Partitioned"
+                    )
+                    headers.append((b"set-cookie", cookie.encode("latin-1")))
+                elif session_id:
+                    self._delete(session_id)
+                    cookie = (
+                        f"{self.cookie_name}=; Path=/; Max-Age=0; HttpOnly; "
+                        "Secure; SameSite=None; Partitioned"
+                    )
+                    headers.append((b"set-cookie", cookie.encode("latin-1")))
+                message["headers"] = headers
+            await send(message)
+
+        await self.app(scope, receive, send_with_session)
+
+
 app = FastAPI(title=MANIFEST["applicationName"], docs_url=None, redoc_url=None)
-app.add_middleware(
-    SessionMiddleware, secret_key=SESSION_SECRET, https_only=True,
-    same_site="lax", max_age=8 * 60 * 60,
-)
+app.add_middleware(ServerSideSessionMiddleware)
 
 
 @contextmanager
@@ -266,10 +412,10 @@ def require_upload_capacity(incoming_bytes: int = 0, *, copies: int = 1) -> None
                 raise ValueError("state file is too large")
             state = json.loads(raw)
             if not isinstance(state, dict):
-                raise ValueError("state file must contain an object")
+                raise TypeError("state file must contain an object")
             thresholds = state.get("thresholds") or {}
             if not isinstance(thresholds, dict):
-                raise ValueError("state file thresholds must contain an object")
+                raise TypeError("state file thresholds must contain an object")
             minimum_free_gib = thresholds.get("minimumFreeGiB", 5)
             stop_upload_used_percent = thresholds.get("stopUploadUsedPercent", 90)
             if (
@@ -324,7 +470,6 @@ def init_db() -> None:
           event_type TEXT NOT NULL, module_key TEXT NOT NULL, entity_type TEXT NOT NULL,
           entity_id TEXT NOT NULL, occurred_at TEXT NOT NULL, payload TEXT NOT NULL
         );
-        CREATE TABLE IF NOT EXISTS consumed_tickets (jti TEXT PRIMARY KEY, expires_at INTEGER NOT NULL);
         CREATE TABLE IF NOT EXISTS consumed_confirmations (
           confirmation_id TEXT PRIMARY KEY, consumed_at TEXT NOT NULL,
           request_id TEXT, action_key TEXT
@@ -335,6 +480,11 @@ def init_db() -> None:
           actor TEXT NOT NULL, params_hash TEXT NOT NULL,
           confirmed_at TEXT NOT NULL, consumed_at TEXT
         );
+        CREATE TABLE IF NOT EXISTS browser_sessions (
+          session_hash TEXT PRIMARY KEY, data TEXT NOT NULL, expires_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_browser_sessions_expiry
+          ON browser_sessions(expires_at);
         CREATE TABLE IF NOT EXISTS event_deliveries (
           delivery_id TEXT PRIMARY KEY, event_id TEXT NOT NULL UNIQUE, event_type TEXT NOT NULL,
           source_application_slug TEXT NOT NULL DEFAULT '', target_module_key TEXT NOT NULL DEFAULT '',
@@ -344,7 +494,8 @@ def init_db() -> None:
           storage_key TEXT PRIMARY KEY, file_id TEXT NOT NULL UNIQUE,
           module_key TEXT NOT NULL, original_name TEXT NOT NULL,
           mime_type TEXT NOT NULL, size INTEGER NOT NULL, sha256 TEXT NOT NULL,
-          storage_backend TEXT NOT NULL, created_by TEXT NOT NULL,
+          storage_backend TEXT NOT NULL, department_id TEXT NOT NULL DEFAULT '',
+          created_by TEXT NOT NULL,
           business_type TEXT, business_id TEXT,
           deletion_state TEXT NOT NULL DEFAULT 'active', version INTEGER NOT NULL DEFAULT 1,
           deletion_owner TEXT, recovery_after TEXT,
@@ -412,6 +563,16 @@ def init_db() -> None:
                 connection.execute(
                     f"ALTER TABLE stored_files ADD COLUMN {column} {declaration}"
                 )
+        if "department_id" not in columns:
+            existing_files = int(
+                connection.execute("SELECT COUNT(*) FROM stored_files").fetchone()[0]
+            )
+            if existing_files:
+                raise RuntimeError(
+                    "Existing files need an explicit department_id backfill before "
+                    "enabling platform role data scopes"
+                )
+            connection.execute("ALTER TABLE stored_files ADD COLUMN department_id TEXT")
         connection.execute(
             "UPDATE stored_files SET file_id=lower(hex(randomblob(16))) WHERE file_id IS NULL OR file_id=''"
         )
@@ -856,16 +1017,22 @@ def bearer(authorization: str | None) -> str:
     return authorization[7:]
 
 
-def require_static_token(authorization: str | None) -> None:
-    if not hmac.compare_digest(bearer(authorization), INTEGRATION_SECRET):
-        raise HTTPException(401, "Invalid integration token")
+def require_manifest_token(authorization: str | None) -> None:
+    if not hmac.compare_digest(bearer(authorization), MANIFEST_ACCESS_TOKEN):
+        raise HTTPException(401, "Invalid manifest access token")
 
 
 def decode_jwt(token: str, expected_type: str) -> dict[str, Any]:
+    signing_secret = {
+        "zhuojian-action": ACTION_SIGNING_SECRET,
+        "zhuojian-event": EVENT_SIGNING_SECRET,
+    }.get(expected_type)
+    if signing_secret is None:
+        raise HTTPException(401, "Invalid integration JWT type")
     try:
         claims = jwt.decode(
             token,
-            INTEGRATION_SECRET,
+            signing_secret,
             algorithms=["HS256"],
             audience=APP_SLUG,
             options={"require": ["exp", "iat"]},
@@ -1237,13 +1404,84 @@ def session_allows(session: dict, module_key: str, page_key: str, action_key: st
     )
 
 
+def action_scoped_actor(session: dict, page_key: str, action_key: str) -> dict:
+    """Use only scopes from roles that independently authorize this Action."""
+
+    page = (session.get("pageAccess") or {}).get(page_key)
+    action_scopes = page.get("actionDataScopes") if isinstance(page, dict) else None
+    scope = action_scopes.get(action_key) if isinstance(action_scopes, dict) else None
+    if not isinstance(scope, dict):
+        raise HTTPException(403, "Platform Action data scope is required")
+    actor = dict(session)
+    actor["effectiveDataScope"] = scope
+    return actor
+
+
+def validate_live_session(
+    session: dict,
+    module_key: str,
+    page_key: str,
+    action_key: str | None = None,
+) -> dict:
+    """Fail closed unless SaaS confirms this iframe session is still authorized."""
+
+    if (
+        not isinstance(session.get("sub"), str)
+        or isinstance(session.get("authEpoch"), bool)
+        or not isinstance(session.get("authEpoch"), int)
+    ):
+        raise HTTPException(401, "Open this module from ZhuoJian SaaS")
+    try:
+        response = httpx.post(
+            SSO_SESSION_CHECK_URL,
+            headers={
+                "authorization": f"Bearer {SSO_EXCHANGE_TOKEN}",
+                "content-type": "application/json",
+                "user-agent": "ZhuoJian-Subsystem-Session/2.5",
+            },
+            json={
+                "user_id": session["sub"],
+                "auth_epoch": session["authEpoch"],
+                "module_key": module_key,
+                "page_key": page_key,
+                "action_key": action_key,
+            },
+            timeout=10.0,
+            follow_redirects=False,
+            trust_env=False,
+        )
+    except httpx.HTTPError as exc:
+        raise HTTPException(503, "SaaS authorization check is unavailable") from exc
+    if response.status_code in {401, 403}:
+        session.clear()
+        raise HTTPException(response.status_code, "SaaS authorization has been revoked")
+    if response.status_code != 200 or len(response.content) > 64 * 1024:
+        raise HTTPException(503, "SaaS authorization check failed")
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise HTTPException(503, "SaaS authorization check returned invalid data") from exc
+    data_scope = payload.get("effective_data_scope") if isinstance(payload, dict) else None
+    if (
+        not isinstance(payload, dict)
+        or payload.get("valid") is not True
+        or payload.get("auth_epoch") != session["authEpoch"]
+        or not isinstance(data_scope, dict)
+    ):
+        raise HTTPException(503, "SaaS authorization check returned invalid data")
+    actor = dict(session)
+    actor["effectiveDataScope"] = data_scope
+    normalized_data_scope(actor)
+    return actor
+
+
 def require_file_action(
     request: Request,
     module_key: str,
     page_key: str,
     action_key: str,
     allowed_operations: set[str],
-) -> dict:
+) -> tuple[dict, dict]:
     session = request.session
     if not session.get("sub"):
         raise HTTPException(401, "Open this module from ZhuoJian SaaS")
@@ -1258,7 +1496,8 @@ def require_file_action(
     permissions = set((session.get("pageAccess") or {}).get(page_key, {}).get("permissions") or [])
     if "view" not in permissions or required_permission(action["operation"]) not in permissions:
         raise HTTPException(403, "File action permission denied")
-    return action
+    actor = validate_live_session(session, module_key, page_key, action_key)
+    return action, actor
 
 
 def safe_upload_filename(filename: str) -> str:
@@ -1343,6 +1582,25 @@ def require_record_scope(actor: dict, department_id: str | None, created_by: str
     raise HTTPException(403, "Business record is outside the platform role data scope")
 
 
+def require_department_assignment(
+    actor: dict,
+    department_id: str,
+    created_by: str,
+) -> None:
+    """Own-record access never grants permission to assign an arbitrary department."""
+
+    unrestricted, include_self, own_only, department_ids = normalized_data_scope(actor)
+    if unrestricted or department_id in department_ids:
+        return
+    if (
+        (include_self or own_only)
+        and created_by == str(actor.get("sub") or "")
+        and department_id == str(actor.get("departmentId") or "")
+    ):
+        return
+    raise HTTPException(403, "Business record cannot be assigned to that department")
+
+
 def emit_event(connection: sqlite3.Connection, module_key: str, event_type: str, entity_id: str, payload: dict) -> None:
     # The SaaS cursor survives container/database replacement.  A local
     # AUTOINCREMENT that restarts at 1 can therefore hide new events behind an
@@ -1387,6 +1645,8 @@ def execute_business_action(
         raw_data = params.get("data")
         if not isinstance(raw_data, dict):
             raise HTTPException(422, "Create params.data must be an object")
+        if "status" in raw_data:
+            raise HTTPException(422, "Record status can only be changed by a dedicated status action")
         record_id = str(params.get("id") or uuid4().hex)
         data = dict(raw_data)
         department_id = str(data.get("departmentId") or actor.get("departmentId") or "")
@@ -1394,8 +1654,8 @@ def execute_business_action(
             raise HTTPException(422, "A business departmentId is required")
         data["departmentId"] = department_id
         created_by = str(actor.get("sub") or "")
-        require_record_scope(actor, department_id, created_by)
-        status = str(data.pop("status", "draft"))
+        require_department_assignment(actor, department_id, created_by)
+        status = "draft"
         connection.execute(
             "INSERT INTO records(id,module_key,data,department_id,created_by,status,version,created_at,updated_at) "
             "VALUES(?,?,?,?,?,?,1,?,?)",
@@ -1425,13 +1685,15 @@ def execute_business_action(
         changes = params.get("changes")
         if not isinstance(changes, dict):
             raise HTTPException(422, "Update params.changes must be an object")
+        if "status" in changes:
+            raise HTTPException(422, "Record status can only be changed by a dedicated status action")
         data = json.loads(row["data"])
         data.update(changes)
         department_id = str(data.get("departmentId") or row["department_id"] or "")
-        require_record_scope(actor, department_id, row["created_by"])
+        require_department_assignment(actor, department_id, row["created_by"])
         data["departmentId"] = department_id
         version = row["version"] + 1
-        status = str(data.pop("status", row["status"]))
+        status = str(row["status"])
         connection.execute(
             "UPDATE records SET data=?,department_id=?,status=?,version=?,updated_at=? WHERE id=?",
             (
@@ -1477,13 +1739,13 @@ def health():
 
 @app.get("/api/integration/manifest")
 def manifest(authorization: str | None = Header(default=None)):
-    require_static_token(authorization)
+    require_manifest_token(authorization)
     return MANIFEST
 
 
 @app.get("/api/integration/events")
 def events(after: int = 0, limit: int = 100, authorization: str | None = Header(default=None)):
-    require_static_token(authorization)
+    require_manifest_token(authorization)
     limit = max(1, min(limit, 100))
     with db() as connection:
         rows = connection.execute("SELECT * FROM outbox WHERE sequence>? ORDER BY sequence LIMIT ?", (after, limit + 1)).fetchall()
@@ -1652,6 +1914,7 @@ def ui_bootstrap(request: Request, moduleKey: str, pageKey: str):
         or pageKey not in (session.get("pageKeys") or [])
     ):
         raise HTTPException(403, "Page context mismatch")
+    validate_live_session(session, moduleKey, pageKey)
     return {
         "applicationName": MANIFEST["applicationName"],
         "moduleName": module["name"],
@@ -1701,6 +1964,7 @@ async def issue_page_confirmation(request: Request):
         or required_permission(action["operation"]) not in permissions
     ):
         raise HTTPException(403, "Page confirmation is not allowed")
+    validate_live_session(session, module_key, page_key, action_key)
     if subject == "stored-file" and (
         action.get("operation") != "delete" or set(params) != {"fileId"}
     ):
@@ -1770,7 +2034,8 @@ async def invoke_page_action(action_key: str, request: Request):
         raise HTTPException(403, "Page action permission denied")
     if not action.get("requiresConfirmation") and confirmation is not None:
         raise HTTPException(422, "confirmation is only valid for high-risk actions")
-    actor = str(session["sub"])
+    scoped_actor = validate_live_session(session, module_key, page_key, action_key)
+    actor = str(scoped_actor["sub"])
     request_hash = action_request_hash(
         action_key,
         module_key,
@@ -1792,7 +2057,7 @@ async def invoke_page_action(action_key: str, request: Request):
             action,
             params,
             expected_version,
-            session,
+            scoped_actor,
             connection,
         ),
     )
@@ -1800,16 +2065,19 @@ async def invoke_page_action(action_key: str, request: Request):
 
 @app.get("/api/ui/files")
 def list_files(request: Request, moduleKey: str, pageKey: str, actionKey: str):
-    require_file_action(request, moduleKey, pageKey, actionKey, {"query", "export"})
+    _, actor = require_file_action(
+        request, moduleKey, pageKey, actionKey, {"query", "export"}
+    )
+    scope_sql, scope_values = scoped_records_clause(actor)
     with db() as connection:
         rows = connection.execute(
-            """
+            f"""
             SELECT file_id,original_name,mime_type,size,sha256,storage_backend,version,created_at
             FROM stored_files
-            WHERE module_key=? AND deletion_state='active'
+            WHERE module_key=? AND deletion_state='active'{scope_sql}
             ORDER BY created_at DESC LIMIT 200
             """,
-            (moduleKey,),
+            [moduleKey, *scope_values],
         ).fetchall()
     return {"items": [{
         "fileId": row["file_id"],
@@ -1833,7 +2101,14 @@ async def upload_file(
     businessType: str | None = None,
     businessId: str | None = None,
 ):
-    require_file_action(request, moduleKey, pageKey, actionKey, {"create", "update"})
+    _, actor = require_file_action(
+        request, moduleKey, pageKey, actionKey, {"create", "update"}
+    )
+    department_id = str(actor.get("departmentId") or "")
+    created_by = str(actor.get("sub") or "")
+    if not department_id:
+        raise HTTPException(422, "A business department is required for file uploads")
+    require_department_assignment(actor, department_id, created_by)
     filename = safe_upload_filename(filename)
     announced_size = request.headers.get("content-length")
     if announced_size is None:
@@ -1884,8 +2159,9 @@ async def upload_file(
                         """
                         INSERT INTO stored_files(
                           storage_key,file_id,module_key,original_name,mime_type,size,sha256,
-                          storage_backend,created_by,business_type,business_id,deletion_state,created_at
-                        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+                          storage_backend,department_id,created_by,business_type,business_id,
+                          deletion_state,created_at
+                        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                         """,
                         (
                             storage_key,
@@ -1896,7 +2172,8 @@ async def upload_file(
                             received,
                             expected_digest,
                             adapter.backend,
-                            str(request.session["sub"]),
+                            department_id,
+                            created_by,
                             businessType,
                             businessId,
                             "uploading",
@@ -1972,11 +2249,14 @@ async def download_file(
     pageKey: str,
     actionKey: str,
 ):
-    require_file_action(request, moduleKey, pageKey, actionKey, {"query", "export"})
+    _, actor = require_file_action(
+        request, moduleKey, pageKey, actionKey, {"query", "export"}
+    )
     with db() as connection:
         row = connection.execute(
             """
-            SELECT storage_key,module_key,original_name,mime_type,size,sha256,storage_backend
+            SELECT storage_key,module_key,original_name,mime_type,size,sha256,storage_backend,
+                   department_id,created_by
             FROM stored_files
             WHERE file_id=? AND module_key=? AND deletion_state='active'
             """,
@@ -1984,6 +2264,7 @@ async def download_file(
         ).fetchone()
     if row is None:
         raise HTTPException(404, "File metadata not found")
+    require_record_scope(actor, row["department_id"], row["created_by"])
     try:
         stream = await run_in_threadpool(
             storage_adapter(row["storage_backend"]).open,
@@ -2012,7 +2293,9 @@ async def delete_file(
     pageKey: str,
     actionKey: str,
 ):
-    action = require_file_action(request, moduleKey, pageKey, actionKey, {"delete"})
+    action, scoped_actor = require_file_action(
+        request, moduleKey, pageKey, actionKey, {"delete"}
+    )
     try:
         body = await request.json()
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
@@ -2025,7 +2308,7 @@ async def delete_file(
     )
     if body_module != moduleKey or body_page != pageKey or params != {"fileId": file_id}:
         raise HTTPException(403, "File delete action context mismatch")
-    actor = str(request.session["sub"])
+    actor = str(scoped_actor["sub"])
     request_hash = action_request_hash(
         actionKey,
         moduleKey,
@@ -2052,13 +2335,19 @@ async def delete_file(
             raise HTTPException(409, "File delete action has an invalid state")
         database_row = connection.execute(
             """
-                SELECT storage_key,storage_backend,deletion_state,version,deletion_owner
+                SELECT storage_key,storage_backend,deletion_state,version,deletion_owner,
+                       department_id,created_by
             FROM stored_files WHERE file_id=? AND module_key=?
             """,
             (file_id, moduleKey),
         ).fetchone()
         if database_row is None:
             raise HTTPException(404, "File metadata not found")
+        require_record_scope(
+            scoped_actor,
+            database_row["department_id"],
+            database_row["created_by"],
+        )
         if stored is None:
             if database_row["deletion_state"] != "active":
                 raise HTTPException(409, "File deletion is already in progress")
@@ -2170,50 +2459,263 @@ async def delete_file(
     return Response(status_code=204)
 
 
-@app.get("/api/integration/sso")
-def sso(request: Request, ticket: str, redirect: str = "/"):
-    if not redirect.startswith("/") or redirect.startswith("//") or urlsplit(redirect).scheme:
-        raise HTTPException(400, "redirect must be a site-relative path")
-    claims = decode_jwt(ticket, "zhuojian-sso")
-    module_key, jti = str(claims.get("moduleKey") or ""), str(claims.get("jti") or "")
-    if module_key not in MODULES or not jti:
-        raise HTTPException(403, "Invalid module session")
-    page_keys, action_keys, page_access = claims.get("pageKeys"), claims.get("actionKeys"), claims.get("pageAccess")
+def parse_sso_timestamp(value: Any, label: str) -> datetime:
+    if not isinstance(value, str) or not value or len(value) > 64:
+        raise HTTPException(401, f"Invalid SSO {label}")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise HTTPException(401, f"Invalid SSO {label}") from exc
+    if parsed.tzinfo is None:
+        raise HTTPException(401, f"Invalid SSO {label}")
+    return parsed.astimezone(timezone.utc)
+
+
+def require_string_list(value: Any, label: str, *, nonempty: bool = False) -> list[str]:
     if (
-        not isinstance(page_keys, list) or not page_keys
-        or any(not isinstance(key, str) for key in page_keys)
-        or not isinstance(action_keys, list) or any(not isinstance(key, str) for key in action_keys)
-        or not isinstance(page_access, dict)
-        or not isinstance(claims.get("roleIds"), list)
+        not isinstance(value, list)
+        or (nonempty and not value)
+        or any(not isinstance(item, str) or not item for item in value)
+        or len(set(value)) != len(value)
+    ):
+        raise HTTPException(403, f"Invalid SSO {label}")
+    return value
+
+
+def exchange_sso_code(code: str, redirect: str, launch_nonce: str) -> dict[str, Any]:
+    try:
+        response = httpx.post(
+            SSO_EXCHANGE_URL,
+            headers={
+                "Authorization": f"Bearer {SSO_EXCHANGE_TOKEN}",
+                "Accept": "application/json",
+            },
+            json={
+                "code": code,
+                "redirect": redirect,
+                "launch_nonce": launch_nonce,
+            },
+            follow_redirects=False,
+            timeout=httpx.Timeout(10.0, connect=5.0),
+            trust_env=False,
+        )
+    except httpx.HTTPError as exc:
+        raise HTTPException(502, "SaaS SSO exchange is unavailable") from exc
+    if response.status_code in {401, 403, 404}:
+        raise HTTPException(401, "Invalid or expired SSO code")
+    if response.status_code != 200:
+        raise HTTPException(502, "SaaS SSO exchange failed")
+    if len(response.content) > 64 * 1024:
+        raise HTTPException(502, "SaaS SSO exchange response is invalid")
+    content_type = response.headers.get("content-type", "").split(";", 1)[0].lower()
+    if content_type != "application/json":
+        raise HTTPException(502, "SaaS SSO exchange response is invalid")
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise HTTPException(502, "SaaS SSO exchange response is invalid") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(502, "SaaS SSO exchange response is invalid")
+    return payload
+
+
+def validate_sso_exchange(
+    payload: dict[str, Any], redirect: str, launch_nonce: str
+) -> dict[str, Any]:
+    expected_fields = {
+        "application_id",
+        "application_slug",
+        "organization_id",
+        "module_key",
+        "redirect",
+        "launch_nonce",
+        "claims",
+    }
+    if set(payload) != expected_fields:
+        raise HTTPException(401, "Invalid SSO exchange response")
+    try:
+        UUID(str(payload.get("application_id")))
+        response_organization_id = UUID(str(payload.get("organization_id")))
+        expected_organization_id = UUID(EXPECTED_ORGANIZATION_ID)
+    except (ValueError, TypeError, AttributeError) as exc:
+        raise HTTPException(401, "Invalid SSO organization or application") from exc
+    module_key = payload.get("module_key")
+    if (
+        payload.get("application_slug") != APP_SLUG
+        or response_organization_id != expected_organization_id
+        or not isinstance(module_key, str)
+        or module_key not in MODULES
+        or payload.get("redirect") != redirect
+        or payload.get("launch_nonce") != launch_nonce
+    ):
+        raise HTTPException(403, "SSO exchange is not bound to this module launch")
+
+    claims = payload.get("claims")
+    if not isinstance(claims, dict):
+        raise HTTPException(401, "Invalid SSO claims")
+    required_claims = {
+        "iss",
+        "aud",
+        "typ",
+        "sub",
+        "organizationId",
+        "moduleKey",
+        "jti",
+        "launchNonce",
+        "sessionBindingHash",
+        "authEpoch",
+        "iat",
+        "exp",
+        "departmentIds",
+        "roleIds",
+        "effectiveDataScope",
+        "permissions",
+        "pageKeys",
+        "actionKeys",
+        "pageAccess",
+    }
+    if not required_claims.issubset(claims):
+        raise HTTPException(401, "SSO claims are incomplete")
+    if (
+        claims.get("iss") != "zhuojian-saas"
+        or claims.get("typ") != "zhuojian-sso-code"
+        or claims.get("aud") != APP_SLUG
+        or claims.get("organizationId") != str(expected_organization_id)
+        or claims.get("moduleKey") != module_key
+        or claims.get("launchNonce") != launch_nonce
+        or not isinstance(claims.get("sub"), str)
+        or not claims["sub"]
+        or not isinstance(claims.get("jti"), str)
+        or not claims["jti"]
+        or not isinstance(claims.get("sessionBindingHash"), str)
+        or not SHA256_PATTERN.fullmatch(claims["sessionBindingHash"])
+        or isinstance(claims.get("authEpoch"), bool)
+        or not isinstance(claims.get("authEpoch"), int)
+        or claims["authEpoch"] < 0
         or not isinstance(claims.get("effectiveDataScope"), dict)
     ):
-        raise HTTPException(403, "SSO page/action scope is required")
-    if set(page_keys) != set(page_access):
+        raise HTTPException(403, "SSO claims are not bound to this module launch")
+
+    issued_at = parse_sso_timestamp(claims.get("iat"), "issued time")
+    expires_at = parse_sso_timestamp(claims.get("exp"), "expiry")
+    now = datetime.now(timezone.utc)
+    lifetime = (expires_at - issued_at).total_seconds()
+    if lifetime <= 0 or lifetime > 120 or issued_at > now + timedelta(seconds=5) or expires_at <= now:
+        raise HTTPException(401, "SSO claims have expired or violate the 120-second lifetime")
+
+    page_keys = require_string_list(claims.get("pageKeys"), "pageKeys", nonempty=True)
+    action_keys = require_string_list(claims.get("actionKeys"), "actionKeys")
+    department_ids = require_string_list(claims.get("departmentIds"), "departmentIds")
+    role_ids = require_string_list(claims.get("roleIds"), "roleIds")
+    permissions = require_string_list(claims.get("permissions"), "permissions")
+    if any(
+        key not in ACTIONS or ACTIONS[key]["moduleKey"] != module_key
+        for key in action_keys
+    ):
+        raise HTTPException(403, "SSO action is outside the module")
+    page_access = claims.get("pageAccess")
+    if not isinstance(page_access, dict) or set(page_access) != set(page_keys):
         raise HTTPException(403, "SSO page scope mismatch")
     for page_key in page_keys:
-        page = PAGES.get(str(page_key))
+        page = PAGES.get(page_key)
         access = page_access.get(page_key)
         if not page or page["moduleKey"] != module_key or not isinstance(access, dict):
             raise HTTPException(403, "SSO page is outside the module")
-        if any(key not in page.get("actionKeys", []) or key not in action_keys for key in access.get("actionKeys") or []):
+        if set(access) != {
+            "permissions",
+            "actionKeys",
+            "dataScopes",
+            "actionDataScopes",
+        }:
+            raise HTTPException(403, "Invalid SSO page access")
+        page_action_keys = require_string_list(
+            access.get("actionKeys"), f"pageAccess.{page_key}.actionKeys"
+        )
+        page_permissions = require_string_list(
+            access.get("permissions"), f"pageAccess.{page_key}.permissions"
+        )
+        data_scopes = access.get("dataScopes")
+        action_data_scopes = access.get("actionDataScopes")
+        if (
+            not isinstance(data_scopes, dict)
+            or set(data_scopes) != set(page_permissions)
+            or not isinstance(action_data_scopes, dict)
+            or set(action_data_scopes) != set(page_action_keys)
+        ):
+            raise HTTPException(403, "SSO resource data scope mismatch")
+        for label, scope in [
+            *((f"permission {key}", value) for key, value in data_scopes.items()),
+            *((f"action {key}", value) for key, value in action_data_scopes.items()),
+        ]:
+            if (
+                not isinstance(scope, dict)
+                or set(scope)
+                != {"unrestricted", "include_self", "own_only", "department_ids"}
+                or not isinstance(scope.get("unrestricted"), bool)
+                or not isinstance(scope.get("include_self"), bool)
+                or not isinstance(scope.get("own_only"), bool)
+                or not isinstance(scope.get("department_ids"), list)
+                or any(not isinstance(value, str) or not value for value in scope["department_ids"])
+            ):
+                raise HTTPException(403, f"Invalid SSO data scope for {label}")
+        if any(
+            key not in page.get("actionKeys", []) or key not in action_keys
+            for key in page_action_keys
+        ):
             raise HTTPException(403, "SSO action is outside the page scope")
     allowed_routes = {str(PAGES[key]["routePattern"]) for key in page_keys}
     if redirect not in allowed_routes:
         raise HTTPException(403, "SSO redirect is not an authorized page")
-    with db() as connection:
-        if connection.execute("SELECT 1 FROM consumed_tickets WHERE jti=?", (jti,)).fetchone():
-            raise HTTPException(409, "SSO ticket was already consumed")
-        connection.execute("INSERT INTO consumed_tickets VALUES(?,?)", (jti, int(claims["exp"])))
-    request.session.update({
-        "sub": claims["sub"], "organizationId": claims["organizationId"],
+
+    return {
+        "sub": claims["sub"],
+        "organizationId": claims["organizationId"],
         "departmentId": claims.get("departmentId"),
-        "departmentIds": claims.get("departmentIds") or [],
-        "roleIds": claims.get("roleIds") or [],
-        "effectiveDataScope": claims.get("effectiveDataScope") or {},
-        "moduleKey": module_key, "permissions": claims.get("permissions") or [],
-        "pageKeys": page_keys, "actionKeys": action_keys, "pageAccess": page_access,
-    })
-    return RedirectResponse(redirect, status_code=302)
+        "departmentIds": department_ids,
+        "roleIds": role_ids,
+        "effectiveDataScope": claims["effectiveDataScope"],
+        "moduleKey": module_key,
+        "permissions": permissions,
+        "pageKeys": page_keys,
+        "actionKeys": action_keys,
+        "pageAccess": page_access,
+        "authEpoch": claims["authEpoch"],
+    }
+
+
+@app.get("/api/integration/sso")
+def sso(request: Request, code: str, redirect: str, launch_nonce: str):
+    referer = request.headers.get("referer", "")
+    try:
+        parsed_referer = urlsplit(referer)
+        referring_origin = canonical_https_origin(
+            f"{parsed_referer.scheme}://{parsed_referer.netloc}",
+            "Referer",
+        )
+    except (RuntimeError, ValueError):
+        referring_origin = ""
+    fetch_destination = request.headers.get("sec-fetch-dest", "")
+    if referring_origin not in set(SAAS_ORIGINS) | {SAAS_ORIGIN} or fetch_destination not in {
+        "iframe",
+        "document",
+    }:
+        raise HTTPException(403, "SSO navigation must start from ZhuoJian SaaS")
+    if not redirect.startswith("/") or redirect.startswith("//") or urlsplit(redirect).scheme:
+        raise HTTPException(400, "redirect must be a site-relative path")
+    if not re.fullmatch(r"zjsc_[A-Za-z0-9_-]{32,507}", code):
+        raise HTTPException(400, "Invalid SSO code format")
+    if not re.fullmatch(r"[A-Za-z0-9_-]{20,128}", launch_nonce):
+        raise HTTPException(400, "Invalid SSO launch nonce")
+    session = validate_sso_exchange(
+        exchange_sso_code(code, redirect, launch_nonce), redirect, launch_nonce
+    )
+    request.session.clear()
+    request.session.update(session)
+    request.scope["rotate_session"] = True
+    response = RedirectResponse(redirect, status_code=302)
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Pragma"] = "no-cache"
+    return response
 
 
 @app.get("/")

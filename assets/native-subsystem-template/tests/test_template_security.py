@@ -4,7 +4,6 @@ import re
 import unittest
 from pathlib import Path
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -19,7 +18,7 @@ class TemplateSecurityTests(unittest.TestCase):
         self.assertNotIn("__APPLICATION_NAME__", html)
         self.assertNotIn("__MODULE_NAME__", html)
 
-    def test_uvicorn_access_log_is_disabled_to_protect_sso_query_tickets(self):
+    def test_uvicorn_access_log_is_disabled_to_protect_sso_query_codes(self):
         dockerfile = (PROJECT_ROOT / "Dockerfile").read_text(encoding="utf-8")
 
         self.assertIn('"--no-access-log"', dockerfile)
@@ -31,6 +30,42 @@ class TemplateSecurityTests(unittest.TestCase):
             "FILE_STORAGE_GATEWAY_TIMEOUT_SECONDS: ${FILE_STORAGE_GATEWAY_TIMEOUT_SECONDS:-900}",
             compose,
         )
+
+    def test_v25_project_credentials_are_split_and_runtime_injected(self):
+        source = (PROJECT_ROOT / "app.py").read_text(encoding="utf-8")
+        compose = (PROJECT_ROOT / "compose.yaml").read_text(encoding="utf-8")
+        example = (PROJECT_ROOT / ".env.example").read_text(encoding="utf-8")
+
+        for name, prefix in {
+            "ZHUOJIAN_MANIFEST_ACCESS_TOKEN": "zjmf_",
+            "ZHUOJIAN_SSO_EXCHANGE_TOKEN": "zjss_",
+            "ZHUOJIAN_ACTION_SIGNING_SECRET": "zjac_",
+            "ZHUOJIAN_EVENT_SIGNING_SECRET": "zjev_",
+        }.items():
+            self.assertIn(name, source)
+            self.assertIn(prefix, source)
+            self.assertIn(f"{name}: ${{{name}:?}}", compose)
+            self.assertRegex(example, rf"(?m)^{name}=\s*$")
+        self.assertNotIn("ZHUOJIAN_INTEGRATION_SECRET", source)
+        self.assertNotIn("ZHUOJIAN_INTEGRATION_SECRET", compose)
+        self.assertRegex(example, r"(?m)^SESSION_SECRET=\s*$")
+        self.assertRegex(example, r"(?m)^ZHUOJIAN_ORGANIZATION_ID=\s*$")
+        self.assertNotIn("replace-with-runtime-generated", example)
+
+    def test_sso_code_is_exchanged_server_side_without_redirect_following(self):
+        source = (PROJECT_ROOT / "app.py").read_text(encoding="utf-8")
+        sso_source = source[source.index("def exchange_sso_code("):]
+
+        self.assertIn(
+            'SSO_EXCHANGE_URL = f"{SAAS_ORIGIN}/api/v1/subsystem-sso/exchange"',
+            source,
+        )
+        self.assertIn('"Authorization": f"Bearer {SSO_EXCHANGE_TOKEN}"', sso_source)
+        self.assertIn('"launch_nonce": launch_nonce', sso_source)
+        self.assertIn("follow_redirects=False", sso_source)
+        self.assertIn("trust_env=False", sso_source)
+        self.assertIn("lifetime > 120", sso_source)
+        self.assertIn("request.session.clear()", sso_source)
 
     def test_storage_recovery_never_blocks_application_startup(self):
         source = (PROJECT_ROOT / "app.py").read_text(encoding="utf-8")

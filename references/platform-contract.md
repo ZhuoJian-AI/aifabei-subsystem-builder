@@ -1,6 +1,6 @@
-# 灼见原生模块接入协议 v2.4
+# 灼见原生模块接入协议 v2.5
 
-`version` 始终是整数 `2`；兼容增强写入字符串 `contractRevision`。当前灼见 SaaS 已支持到 `2.4`，本 Skill 的新建和升级系统固定声明 `contractRevision="2.4"`，不自行发明更高版本号。本 Skill 在 v2.4 可兼容字段上要求 Action 提供业务描述和接口能力，供 SaaS 生成基础 AI 工具；其余说明字段用于提升模型选择和调用质量，不作为接入门槛。
+`version` 始终是整数 `2`；兼容增强写入字符串 `contractRevision`。本 Skill 新建和升级的原生系统固定声明 `contractRevision="2.5"`。v2.5 把 Manifest、SSO、Action 和 Event 的凭证拆开，并把 SSO 改为平台保存、模块后端单次兑换的短码；业务字段与 v2.4 保持兼容。
 
 ## 标识和边界
 
@@ -10,8 +10,8 @@
 - `pageKey`：子模块内稳定页面/工作上下文，也是最小可见边界。
 - `actionKey`：系统内全局唯一业务命令，也是最小操作边界。
 - `departments[]`：开发、协作、审批和验收责任目录；每个子模块恰好一个 owner 部门。部门责任不产生员工访问权限。
-- `accessRoles[]`：v2.4 所需的“页面 + Action”权限组合建议。它不是子系统的角色，不创建角色、不绑定用户、不决定部门数据范围；管理员只把其中的页面和 Action 授权给 SaaS 中已有的平台角色。当前管理员界面要求处理每个建议，因此 Manifest 只声明真实业务需要的最少权限组合，不预制猜测性角色。
-- 用户组织归属为单一 `departmentId`，可拥有多个平台角色。SaaS 把全部有效角色合并为 `applicationSlug/moduleKey/pageKey/actionKey` 权限树和 `effectiveDataScope`。后者表示该用户可查看全部数据、本人数据或哪些部门的数据。跨部门协作通过增加角色实现，不通过多部门成员关系、部门直授或个人直授实现。
+- `accessRoles[]`：所需的“页面 + Action”权限组合建议。它不是子系统的角色，不创建角色、不绑定用户、不决定部门数据范围；Manifest 只声明真实业务需要的最少组合。
+- 用户组织归属为单一 `departmentId`，可拥有多个平台角色。每次访问时，SaaS 先筛出确实授予当前应用、子模块、页面或 Action 的角色，再只合并这些角色的数据范围。未授予当前资源的角色不能扩大它的 `effectiveDataScope`。
 - 稳定标识仅使用小写字母、数字、点、下划线和短横线，不随显示文案变化。
 
 ## 固定端点
@@ -23,11 +23,11 @@
 | GET | `/api/integration/events?after=&limit=` | 模块到 SaaS 的顺序增量事件 |
 | POST | `/api/integration/event-deliveries` | SaaS 到目标模块的签名事件投递 |
 | POST | `/api/integration/actions/{actionKey}` | 页面和 AI 共用业务命令出口 |
-| GET | `/api/integration/sso?ticket=&redirect=` | iframe 一次性票据换模块会话 |
+| GET | `/api/integration/sso?code=&redirect=&launch_nonce=` | iframe 单次短码换模块会话 |
 
-每个模块系统只有一个独立的 `ZHUOJIAN_INTEGRATION_SECRET`：Manifest 和事件拉取把它作为静态 Bearer Token；SSO 使用 120 秒、严格一次性的 HS256 JWT，Action 和事件投递使用 60 秒 HS256 JWT。SSO Ticket 消费后必须立即建立模块会话并重定向到不含 Ticket 的业务路由；平台刷新或重新挂载 iframe 时必须重新签发，禁止缓存或复用启动 URL。这个密钥只属于当前模块系统，不得跨系统复用，也不得复用灼见全局用户 JWT 密钥。管理员接入界面因此只需要填写一次“接入凭证”。
+Runtime 为每个系统自动生成四类不可混用的凭证：`zjmf_` 只用于 Manifest 和事件拉取，`zjss_` 只用于模块后端兑换 SSO 短码，`zjac_` 只验证 Action JWT，`zjev_` 只验证事件投递 JWT。它们不得跨系统复用，也不得使用灼见全局 JWT 密钥。业务负责人不接触这些值；Runtime 登记时一次提交，SaaS 只保存必要的哈希或加密值。
 
-模块部署时还必须配置 `ZHUOJIAN_ORGANIZATION_ID`，并把它绑定到灼见中该企业的真实 organization UUID。所有 SSO、Action 和事件投递 JWT 都必须同时校验 `aud=applicationSlug` 与 `organizationId=ZHUOJIAN_ORGANIZATION_ID`；不能只检查“organizationId 非空”。
+模块部署时还必须配置 `ZHUOJIAN_ORGANIZATION_ID`。SSO 兑换结果、Action JWT 和事件 JWT 都必须同时校验 `aud=applicationSlug` 与 `organizationId=ZHUOJIAN_ORGANIZATION_ID`；不能只检查字段非空。
 
 ## 平台 AI 与模块边界
 
@@ -62,7 +62,7 @@ ECS 管理员只需在 Runtime 初始化时建立通配域名、HTTPS `443` 和 
 
 `inputSchema` 描述 Action 请求体中的 `params`，不是整个 HTTP 请求。模型只生成业务参数；平台生成 `requestId`，从登记目录确定应用、模块、页面、Action 和操作类型。`update/delete` 所需 `expectedVersion` 必须来自最近一次获授权查询或 Bridge 页面上下文；没有可信版本时先查询或要求用户刷新，禁止让模型猜测版本号。
 
-本 Skill 对 v2.4 Action 的最小构建要求只有“描述 + 接口能力”：每个 Action 提供非空 `description`，以及 `actionKey/operation/inputSchema/resultSchema/aiEnabled/requiresConfirmation`；其中 `inputSchema` 是根类型为 `object` 的 JSON Schema，`resultSchema` 是 JSON Schema 对象。这不改变协议版本，只保证平台不需要管理员逐条写说明，就能把已授权 Action 生成基础 AI 工具。
+本 Skill 对 v2.5 Action 的最小构建要求只有“描述 + 接口能力”：每个 Action 提供非空 `description`，以及 `actionKey/operation/inputSchema/resultSchema/aiEnabled/requiresConfirmation`；其中 `inputSchema` 是根类型为 `object` 的 JSON Schema，`resultSchema` 是 JSON Schema 对象。这样平台不需要管理员逐条写说明，就能把已授权 Action 生成基础 AI 工具。
 
 整个 `aiTool` 都是可选的推荐增强项。脚手架默认生成，缺少时本 Skill 验收器给出警告，但不能仅因缺少这些字段阻断登记；当前 SaaS 可忽略它：
 
@@ -81,14 +81,14 @@ ECS 管理员只需在 Runtime 初始化时建立通配域名、HTTPS `443` 和 
 {
   "protocol": "zhuojian-subsystem",
   "version": 2,
-  "contractRevision": "2.4",
+  "contractRevision": "2.5",
   "enterprise": {"key": "aifabei", "name": "Alphabet"},
   "applicationSlug": "sample-review",
   "applicationName": "样品评审系统",
   "bridgeVersion": 1,
   "eventsUrl": "/api/integration/events",
   "eventDeliveriesUrl": "/api/integration/event-deliveries",
-  "auth": {"ssoPath": "/api/integration/sso", "algorithm": "HS256"},
+  "auth": {"ssoPath": "/api/integration/sso", "mode": "authorization_code"},
   "modules": [{
     "moduleKey": "sample_review",
     "name": "样品评审",
@@ -153,7 +153,7 @@ ECS 管理员只需在 Runtime 初始化时建立通配域名、HTTPS `443` 和 
 }
 ```
 
-完整结构以 `schemas/manifest-v2.schema.json` 为准。部门声明只描述谁负责开发、协作和验收；`accessRoles` 是建议权限组合，不是模块角色，也不是模块自行颁发的权限。平台管理员或企业管理员参考该组合，把页面和 Action 授权给 SaaS 中已有的平台角色后才生效，部门数据范围也一律由平台角色设置。同步新增权限组合建议、页面、Action 和事件时只登记为“待授权”。已批准 Action 的操作类型、输入 Schema、AI 开关、确认要求或业务含义发生变化时，平台必须显示差异并重新置为待审核；只补充名称、描述、`aiTool` 推荐说明或结果说明时记录差异即可，不必自动停用。删除 Action 时平台停用目录项，不自动扩权。
+完整结构以 `schemas/manifest-v2.schema.json` 为准。部门声明只描述谁负责开发、协作和验收；`accessRoles` 是建议权限组合，不是模块角色，也不是模块自行颁发的权限。平台管理员或企业管理员参考该组合，把页面和 Action 授权给 SaaS 中已有的平台角色后才生效，部门数据范围也一律由平台角色设置。同步新增权限组合建议、页面、Action 和事件时只登记为“待授权”。已批准 Action 的名称、描述、操作类型、输入 Schema、AI 开关、确认要求或业务含义发生变化时，平台必须显示差异并重新置为待审核；普通应用、模块和页面的展示文案可以只记录差异。删除 Action 时平台停用目录项，不自动扩权。
 
 ## 角色授权模型
 
@@ -166,7 +166,7 @@ applicationSlug
       └─ actionKey: query/create/update/delete/export/approve
 ```
 
-员工最终权限是全部启用角色权限树与数据范围的并集。`departments[].role=owner` 仅表示该部门负责需求、开发验收或变更确认，不能替代平台角色授权。页面 `view` 与 Action 分开：看见页面不表示能修改数据，也不表示 AI 可以调用页面中的 Action。角色的数据范围由 SaaS 合并为 `effectiveDataScope`，包含 `unrestricted/include_self/own_only/department_ids`；模块查询、导出、修改、删除和审批均必须对业务记录执行该范围。没有 v2.4 角色授权 Manifest 的旧系统可以继续按整站 iframe 或旧契约兼容授权，但必须在管理员界面标记为兼容模式，不能冒充已经完成 v2.4 角色授权。
+员工最终权限仍是角色并集，但数据范围不是全局一次合并：SaaS 对当前资源逐个筛选授权角色，再生成该资源的 `effectiveDataScope`（`unrestricted/include_self/own_only/department_ids`）。`departments[].role=owner` 只表示责任，不能替代授权。页面 `view` 与 Action 分开；模块的查询、导出、修改、删除和审批都必须执行本次收到的数据范围。旧系统可暂时按兼容模式接入，但必须清楚标记。
 
 旧数据没有可用的负责部门或创建人字段时，不能仅新增空列就切换数据范围。升级必须先生成未归属清单，由业务负责人确认归属后回填，验证不同角色的允许与拒绝，再启用新契约。
 
@@ -174,9 +174,9 @@ applicationSlug
 
 ### iframe SSO
 
-灼见先检查 `moduleKey` 的 `view` 权限，再签发 `typ=zhuojian-sso` 短票据。模块验证签名、`iss=zhuojian-saas`、`aud=applicationSlug`、`typ`、`exp`、企业、用户、`moduleKey`、权限和一次性 `jti`。`redirect` 必须是站内相对路径且命中获授权页面。成功后建立 `HttpOnly; Secure; SameSite=Lax` 会话并 302 到不含票据的页面。
+灼见先检查 `moduleKey` 的 `view` 权限，保存绑定用户会话、应用、模块、页面、`redirect`、`launch_nonce` 与 `auth_epoch` 的 120 秒单次短码，浏览器只把短码带到模块。模块后端使用自己的 `zjss_` 凭证 POST `/api/v1/subsystem-sso/exchange`；SaaS 原子消费后返回最终 claims。模块校验应用、企业、模块、跳转路径、nonce、有效期和页面/Action allowlist，把完整 claims 保存在服务端，只给浏览器设置短小的 `HttpOnly; Secure; SameSite=None; Partitioned` 会话标识，再 302 到不含短码的页面。短码只存哈希，刷新 iframe 必须重新签发。
 
-v2.4 SSO 票据必须包含 SaaS 根据平台角色计算的最终页面、操作 allowlist 和数据范围。模块不得用 Manifest 的部门责任、`accessRoles` 建议值或用户本人的 `departmentId` 替代平台最终授权：
+SSO 兑换结果包含 SaaS 针对当前子模块计算的最终页面、操作 allowlist 和数据范围。模块不得用部门责任、`accessRoles` 建议值或用户本人的 `departmentId` 替代：
 
 ```json
 {
@@ -192,17 +192,28 @@ v2.4 SSO 票据必须包含 SaaS 根据平台角色计算的最终页面、操�
   "pageAccess": {
     "sample_review.approval": {
       "permissions": ["view", "ai_query", "ai_approve", "export"],
-      "actionKeys": ["sample_review.query", "sample_review.approve", "sample_review.export"]
+      "actionKeys": ["sample_review.query", "sample_review.approve", "sample_review.export"],
+      "dataScopes": {
+        "view": {"unrestricted": false, "include_self": false, "own_only": false, "department_ids": ["department-id"]},
+        "ai_query": {"unrestricted": false, "include_self": false, "own_only": false, "department_ids": ["department-id"]},
+        "ai_approve": {"unrestricted": false, "include_self": true, "own_only": true, "department_ids": []},
+        "export": {"unrestricted": false, "include_self": false, "own_only": false, "department_ids": ["department-id"]}
+      },
+      "actionDataScopes": {
+        "sample_review.query": {"unrestricted": false, "include_self": false, "own_only": false, "department_ids": ["department-id"]},
+        "sample_review.approve": {"unrestricted": false, "include_self": true, "own_only": true, "department_ids": []},
+        "sample_review.export": {"unrestricted": false, "include_self": false, "own_only": false, "department_ids": ["department-id"]}
+      }
     }
   }
 }
 ```
 
-模块必须把 allowlist 保存到安全会话，只向前端返回允许的页面与按钮；服务端路由、页面 Action 和页面上下文也必须逐次校验 `pageAccess`。伪造 URL、前端显示错误或隐藏按钮均不能绕过服务端检查。
+模块必须把 allowlist 保存到安全会话，只向前端返回允许的页面与按钮；服务端路由、页面 Action 和页面上下文也必须逐次校验 `pageAccess`。页面读取使用 `dataScopes.view`，页面操作使用对应权限的 `dataScopes`，具体 Action 必须使用同名 `actionDataScopes`，不得把一个角色的宽数据范围拼到另一个角色的操作权限上。伪造 URL、前端显示错误或隐藏按钮均不能绕过服务端检查。
 
 ### Action
 
-Action JWT 使用 `typ=zhuojian-action`，至少包含用户、企业、`departmentId`、`departmentIds`、`roleIds`、`effectiveDataScope`、`moduleKey`、`pageKey`、`actionKey`、`operation`、`requestId` 和权限。`operation` 可为 `query/create/update/delete/export/approve`；其中 `approve` 对应独立的 `ai_approve` 权限。模块不信任请求体中的身份或范围字段，并再次验证当前会话/令牌对模块、页面、Action 和业务数据的权限。
+Action JWT 使用该系统专属 `zjac_` 密钥和 `typ=zhuojian-action`，至少包含用户、企业、`departmentId`、`departmentIds`、`roleIds`、当前 Action 的 `effectiveDataScope`、`moduleKey`、`pageKey`、`actionKey`、`operation`、`requestId` 和权限。模块不信任请求体中的身份或范围字段，并再次验证模块、页面、Action 和业务数据权限。
 
 请求体：
 
@@ -238,7 +249,7 @@ Action JWT 使用 `typ=zhuojian-action`，至少包含用户、企业、`departm
 
 ## 页面上下文和 AI 工具
 
-iframe 在模块、页面、实体、筛选或选中项变化后发送。`postMessage` 的 `targetOrigin` 必须从 `document.referrer` 解析并验证为 HTTPS 灼见父页面来源，或使用服务器下发的同等白名单；禁止使用 `"*"`，也禁止把来源值放进用户可控查询参数：
+iframe 在模块、页面、实体、筛选或选中项变化后发送。发送方的 `targetOrigin` 必须来自已验证的 HTTPS 灼见来源，禁止使用 `"*"` 或用户可控查询参数。平台接收方还必须同时验证 `event.origin` 等于该应用登记来源、`event.source` 等于当前 iframe、`launch_nonce` 等于本次启动值，并校验消息类型、版本、应用、模块、页面和字段大小：
 
 ```json
 {

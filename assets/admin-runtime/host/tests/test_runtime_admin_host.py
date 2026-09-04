@@ -3,14 +3,13 @@ import contextlib
 import importlib.util
 import json
 import os
-from pathlib import Path
 import stat
 import sys
 import tempfile
+from pathlib import Path
 from unittest import mock
 
 import pytest
-
 
 HOST_ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location(
@@ -99,6 +98,21 @@ def ok_result(stdout=""):
     return mock.Mock(returncode=0, stdout=stdout, stderr="")
 
 
+class FakeHttpResponse:
+    def __init__(self, status, payload=None):
+        self.status = status
+        self.payload = b"" if payload is None else json.dumps(payload).encode()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+    def read(self, _limit):
+        return self.payload
+
+
 def test_platform_origin_is_canonical_and_rejects_env_or_nginx_injection():
     assert runtime_admin.platform_origin(
         {"platform": {"baseUrl": "https://Portal.Example.com/"}}
@@ -111,6 +125,50 @@ def test_platform_origin_is_canonical_and_rejects_env_or_nginx_injection():
     ):
         with pytest.raises(runtime_admin.AdminError):
             runtime_admin.platform_origin({"platform": {"baseUrl": value}})
+
+
+def test_release_change_gate_uses_runtime_identity_without_exposing_it():
+    with tempfile.TemporaryDirectory() as directory:
+        paths = paths_for(Path(directory))
+        create_roots(paths)
+        secret = "zjrt_runtime-credential-that-must-never-be-returned"
+        paths.credential.write_text(secret + "\n", encoding="utf-8")
+        paths.credential.chmod(0o600)
+        profile = profile_for(paths)
+        opener = mock.Mock()
+        opener.open.side_effect = [
+            FakeHttpResponse(200, {"application_slug": "new-app"}),
+            FakeHttpResponse(204),
+            FakeHttpResponse(204),
+        ]
+        with mock.patch.object(
+            runtime_admin.urllib.request,
+            "build_opener",
+            return_value=opener,
+        ), mock.patch.object(
+            runtime_admin,
+            "secure_file_metadata",
+            return_value={"secure": True},
+        ):
+            assert runtime_admin.begin_platform_release_change(
+                profile,
+                paths,
+                "new-app",
+                "a" * 40,
+            ) is True
+            runtime_admin.cancel_platform_release_change(
+                profile,
+                paths,
+                "new-app",
+                "a" * 40,
+            )
+
+    requests = [call.args[0] for call in opener.open.call_args_list]
+    assert [request.get_method() for request in requests] == ["GET", "POST", "POST"]
+    assert requests[1].full_url.endswith("/modules/new-app/begin-change")
+    assert requests[2].full_url.endswith("/modules/new-app/cancel-change")
+    assert all(request.get_header("Authorization") == f"Bearer {secret}" for request in requests)
+    assert secret not in repr([request.full_url for request in requests])
 
 
 def test_nginx_streams_request_body_to_managed_disk_gates():
@@ -288,9 +346,12 @@ def test_scope_change_fails_closed_on_damaged_release_before_probe():
             runtime_admin, "locked", return_value=contextlib.nullcontext()
         ), mock.patch.object(
             runtime_admin, "credential_metadata", return_value={"secure": True}
-        ), mock.patch.object(runtime_admin, "storage_foundation_ready") as foundation:
-            with pytest.raises(runtime_admin.AdminError, match="release record is invalid"):
-                runtime_admin.configure_oss_gateway(args, paths)
+        ), mock.patch.object(
+            runtime_admin, "storage_foundation_ready"
+        ) as foundation, pytest.raises(
+            runtime_admin.AdminError, match="release record is invalid"
+        ):
+            runtime_admin.configure_oss_gateway(args, paths)
         foundation.assert_not_called()
 
 
@@ -316,9 +377,8 @@ def test_storage_acceptance_requires_anonymous_and_scope_denials():
         runtime_admin.subprocess,
         "run",
         return_value=ok_result(json.dumps({"ok": True, "checks": missing_anonymous})),
-    ):
-        with pytest.raises(runtime_admin.AdminError, match="did not pass every required check"):
-            runtime_admin.verify_storage_foundation("alphabet-company-files", "cn-hongkong")
+    ), pytest.raises(runtime_admin.AdminError, match="did not pass every required check"):
+        runtime_admin.verify_storage_foundation("alphabet-company-files", "cn-hongkong")
 
 
 def test_per_application_storage_network_is_labeled_and_gateway_only():
@@ -350,7 +410,7 @@ def test_per_application_storage_network_is_labeled_and_gateway_only():
             assert runtime_admin.ensure_storage_network("new-app", profile) == name
         create = calls[1]
         assert create[:4] == ["docker", "network", "create", "--driver"]
-        assert f"com.zhuojian.application=new-app" in create
+        assert "com.zhuojian.application=new-app" in create
         assert calls[3] == [
             "docker",
             "network",
@@ -371,9 +431,10 @@ def test_storage_network_refuses_unknown_member():
             "Scope": "local",
             "Containers": {"other": {"Name": "zhuojian-aifabei-other-app"}},
         }
-        with mock.patch.object(runtime_admin, "run", return_value=ok_result(json.dumps(network))):
-            with pytest.raises(runtime_admin.AdminError, match="unknown member"):
-                runtime_admin.ensure_storage_network("new-app", profile)
+        with mock.patch.object(
+            runtime_admin, "run", return_value=ok_result(json.dumps(network))
+        ), pytest.raises(runtime_admin.AdminError, match="unknown member"):
+            runtime_admin.ensure_storage_network("new-app", profile)
 
 
 @pytest.mark.parametrize(
@@ -396,16 +457,20 @@ def test_storage_network_refuses_running_or_mislabeled_rollback_member(identity)
             "Containers": {"rollback-id": {"Name": rollback_name}},
         }
         responses = iter([ok_result(json.dumps(network)), ok_result(identity)])
-        with mock.patch.object(runtime_admin, "run", side_effect=lambda *args, **kwargs: next(responses)):
-            with pytest.raises(runtime_admin.AdminError, match="rollback member"):
-                runtime_admin.inspect_storage_network(name, "new-app", profile)
+        with mock.patch.object(
+            runtime_admin, "run", side_effect=lambda *args, **kwargs: next(responses)
+        ), pytest.raises(runtime_admin.AdminError, match="rollback member"):
+            runtime_admin.inspect_storage_network(name, "new-app", profile)
 
 
-def test_storage_network_allows_exact_stopped_managed_rollback_member():
+@pytest.mark.parametrize("rollback_kind", ["storage", "release"])
+def test_storage_network_allows_exact_stopped_managed_rollback_member(rollback_kind):
     with tempfile.TemporaryDirectory() as directory:
         profile = profile_for(paths_for(Path(directory)))
         name = runtime_admin.storage_network_name("new-app")
-        rollback_name = "zhuojian-aifabei-new-app-rollback-storage-012345abcdef"
+        rollback_name = (
+            f"zhuojian-aifabei-new-app-rollback-{rollback_kind}-012345abcdef"
+        )
         network = {
             "Labels": runtime_admin.storage_network_labels("new-app", profile),
             "Driver": "bridge",
@@ -496,7 +561,6 @@ def test_rotation_persists_prepare_before_switch_and_commits_after_health():
         args = argparse.Namespace(application_slug="new-app", grace_seconds=300, health_timeout=60)
         operation_id = "1" * 32
         canonical = release["containerName"]
-        previous = f"{canonical}-rollback-storage-{operation_id[:12]}"
         containers = {canonical: {"running": True, "operation": None}}
         events = []
 
@@ -791,3 +855,513 @@ def test_load_release_and_ensure_identity_support_host_first_legacy_gateway():
             target.write_text(json.dumps(release), encoding="utf-8")
             with pytest.raises(runtime_admin.AdminError, match="supported managed path"):
                 runtime_admin.load_release(slug, profile, paths)
+
+
+def release_for_switch(paths, *, current=True):
+    profile = profile_for(paths)
+    names = runtime_admin.expected_names("new-app", profile, paths)
+    commit = "a" * 40
+    return {
+        "schemaVersion": 1,
+        "managedBy": runtime_admin.MANAGED_BY,
+        **names,
+        "port": 18001,
+        "containerPort": 8000,
+        "current": (
+            {
+                "commit": commit,
+                "image": f"zhuojian/aifabei/new-app:{commit}",
+                "deployedAt": "earlier",
+            }
+            if current
+            else None
+        ),
+        "history": [],
+        "status": "healthy" if current else "provisioned",
+        "storageMode": runtime_admin.LOCAL_STORAGE_MODE,
+        "updatedAt": "earlier",
+    }
+
+
+def add_release_switch_marker(
+    release,
+    profile,
+    paths,
+    *,
+    target_commit="b" * 40,
+    phase="switching",
+    platform_intent_started=True,
+):
+    with mock.patch.object(runtime_admin, "container_exists", return_value=False), mock.patch.object(
+        runtime_admin, "atomic_json"
+    ), mock.patch.object(runtime_admin.secrets, "token_hex", return_value="1" * 32):
+        marker = runtime_admin.create_release_switch_marker(
+            release,
+            profile,
+            paths,
+            kind="deploy",
+            target_commit=target_commit,
+            target_image=f"zhuojian/aifabei/new-app:{target_commit}",
+            health_timeout=60,
+            previous_nginx=b"old-nginx\n" if release["current"] else None,
+        )
+    marker["phase"] = phase
+    marker["platformIntentStarted"] = platform_intent_started
+    return marker
+
+
+def test_begin_change_adopts_an_existing_saas_application_without_a_release():
+    calls = []
+
+    def fake_request(_profile, _paths, method, endpoint, body=None, **kwargs):
+        calls.append((method, endpoint, body, kwargs))
+        return next(responses)
+
+    responses = iter(
+        [
+            (404, None),
+            (204, None),
+            (200, {"application_slug": "new-app"}),
+        ]
+    )
+    with mock.patch.object(runtime_admin, "platform_release_request", side_effect=fake_request):
+        assert runtime_admin.begin_platform_release_change(
+            {}, mock.Mock(), "new-app", "b" * 40
+        ) is True
+    assert [item[0] for item in calls] == ["GET", "POST", "GET"]
+    assert calls[1][2] == {"target_commit": "b" * 40}
+
+
+def test_begin_change_still_posts_for_a_brand_new_saas_slug():
+    responses = iter([(404, None), (204, None), (404, None)])
+    request = mock.Mock(side_effect=lambda *_args, **_kwargs: next(responses))
+    with mock.patch.object(runtime_admin, "platform_release_request", request):
+        assert (
+            runtime_admin.begin_platform_release_change(
+                {}, mock.Mock(), "new-app", "b" * 40
+            )
+            is False
+        )
+    assert [call.args[2] for call in request.call_args_list] == ["GET", "POST", "GET"]
+
+
+def test_interrupted_switch_restores_container_and_nginx_before_canceling_saas():
+    with tempfile.TemporaryDirectory() as directory:
+        paths = paths_for(Path(directory))
+        create_roots(paths)
+        profile = profile_for(paths)
+        release = release_for_switch(paths)
+        marker = add_release_switch_marker(release, profile, paths)
+        canonical = release["containerName"]
+        rollback = marker["rollbackContainer"]
+        events = []
+        persisted = []
+
+        def inspect(name, *_args, **_kwargs):
+            if name == rollback:
+                return {
+                    "name": name,
+                    "running": False,
+                    "commit": "a" * 40,
+                    "image": f"zhuojian/aifabei/new-app:{'a' * 40}",
+                }
+            assert name == canonical
+            return {
+                "name": name,
+                "running": True,
+                "commit": "b" * 40,
+                "image": f"zhuojian/aifabei/new-app:{'b' * 40}",
+            }
+
+        def fake_run(argv, check=True):
+            del check
+            events.append("docker:" + argv[1])
+            return ok_result()
+
+        def fake_atomic(_path, value, _mode):
+            persisted.append(json.loads(json.dumps(value)))
+            phase = (value.get("releaseSwitch") or {}).get("phase", "complete")
+            events.append("persist:" + phase)
+
+        with mock.patch.object(
+            runtime_admin, "inspect_managed_release_container", side_effect=inspect
+        ), mock.patch.object(runtime_admin, "run", side_effect=fake_run), mock.patch.object(
+            runtime_admin,
+            "restore_nginx",
+            side_effect=lambda *_args: events.append("nginx-restored"),
+        ), mock.patch.object(
+            runtime_admin,
+            "wait_for_health",
+            side_effect=lambda *_args, **_kwargs: events.append("old-healthy"),
+        ), mock.patch.object(
+            runtime_admin,
+            "reconcile_platform_release_change",
+            side_effect=lambda *_args: events.append("saas-canceled"),
+        ), mock.patch.object(runtime_admin, "atomic_json", side_effect=fake_atomic):
+            recovered = runtime_admin.recover_pending_release_switch(
+                release, profile, paths
+            )
+
+    assert events[:3] == ["docker:rm", "docker:rename", "docker:start"]
+    assert events.index("nginx-restored") < events.index("saas-canceled")
+    assert events.index("old-healthy") < events.index("saas-canceled")
+    assert persisted[-2]["releaseSwitch"]["phase"] == "restored"
+    assert "releaseSwitch" not in persisted[-1]
+    assert "releaseSwitch" not in recovered
+
+
+def test_interrupted_switch_keeps_marker_and_saas_closed_until_nginx_recovers():
+    with tempfile.TemporaryDirectory() as directory:
+        paths = paths_for(Path(directory))
+        profile = profile_for(paths)
+        release = release_for_switch(paths)
+        add_release_switch_marker(release, profile, paths)
+        current = {
+            "name": release["containerName"],
+            "running": True,
+            "commit": "a" * 40,
+            "image": f"zhuojian/aifabei/new-app:{'a' * 40}",
+        }
+        reconcile = mock.Mock()
+        with mock.patch.object(
+            runtime_admin,
+            "inspect_managed_release_container",
+            side_effect=[None, current],
+        ), mock.patch.object(
+            runtime_admin,
+            "restore_nginx",
+            side_effect=runtime_admin.AdminError("nginx unavailable"),
+        ), mock.patch.object(
+            runtime_admin, "reconcile_platform_release_change", reconcile
+        ), pytest.raises(runtime_admin.AdminError, match="nginx unavailable"):
+            runtime_admin.recover_pending_release_switch(release, profile, paths)
+        reconcile.assert_not_called()
+        assert release["releaseSwitch"]["phase"] == "switching"
+
+
+def test_cancel_response_loss_preserves_restored_marker_for_idempotent_retry():
+    with tempfile.TemporaryDirectory() as directory:
+        paths = paths_for(Path(directory))
+        profile = profile_for(paths)
+        release = release_for_switch(paths)
+        add_release_switch_marker(release, profile, paths)
+        current = {
+            "name": release["containerName"],
+            "running": True,
+            "commit": "a" * 40,
+            "image": f"zhuojian/aifabei/new-app:{'a' * 40}",
+        }
+        persisted = []
+        with mock.patch.object(
+            runtime_admin,
+            "inspect_managed_release_container",
+            side_effect=[None, current],
+        ), mock.patch.object(runtime_admin, "restore_nginx"), mock.patch.object(
+            runtime_admin, "wait_for_health"
+        ), mock.patch.object(
+            runtime_admin,
+            "reconcile_platform_release_change",
+            side_effect=runtime_admin.AdminError("response lost"),
+        ), mock.patch.object(
+            runtime_admin,
+            "atomic_json",
+            side_effect=lambda _path, value, _mode: persisted.append(
+                json.loads(json.dumps(value))
+            ),
+        ), pytest.raises(runtime_admin.AdminError, match="response lost"):
+            runtime_admin.recover_pending_release_switch(release, profile, paths)
+        assert persisted[-1]["releaseSwitch"]["phase"] == "restored"
+
+
+def test_first_deploy_recovery_removes_only_the_exact_target_container():
+    with tempfile.TemporaryDirectory() as directory:
+        paths = paths_for(Path(directory))
+        profile = profile_for(paths)
+        release = release_for_switch(paths, current=False)
+        add_release_switch_marker(
+            release, profile, paths, platform_intent_started=False
+        )
+        target = {
+            "name": release["containerName"],
+            "running": True,
+            "commit": "b" * 40,
+            "image": f"zhuojian/aifabei/new-app:{'b' * 40}",
+        }
+        calls = []
+        reconcile = mock.Mock()
+        with mock.patch.object(
+            runtime_admin,
+            "inspect_managed_release_container",
+            side_effect=[None, target],
+        ), mock.patch.object(
+            runtime_admin,
+            "run",
+            side_effect=lambda argv, check=True: calls.append(argv) or ok_result(),
+        ), mock.patch.object(runtime_admin, "restore_nginx"), mock.patch.object(
+            runtime_admin, "reconcile_platform_release_change", reconcile
+        ), mock.patch.object(runtime_admin, "atomic_json"):
+            recovered = runtime_admin.recover_pending_release_switch(
+                release, profile, paths
+            )
+        assert calls == [["docker", "rm", "--force", release["containerName"]]]
+        reconcile.assert_not_called()
+        assert recovered["current"] is None
+
+
+def test_power_loss_after_stop_before_rename_restarts_the_old_release():
+    with tempfile.TemporaryDirectory() as directory:
+        paths = paths_for(Path(directory))
+        profile = profile_for(paths)
+        release = release_for_switch(paths)
+        add_release_switch_marker(release, profile, paths)
+        stopped_old = {
+            "name": release["containerName"],
+            "running": False,
+            "commit": "a" * 40,
+            "image": f"zhuojian/aifabei/new-app:{'a' * 40}",
+        }
+        calls = []
+        with mock.patch.object(
+            runtime_admin,
+            "inspect_managed_release_container",
+            side_effect=[None, stopped_old],
+        ), mock.patch.object(
+            runtime_admin,
+            "run",
+            side_effect=lambda argv, check=True: calls.append(argv) or ok_result(),
+        ), mock.patch.object(runtime_admin, "restore_nginx"), mock.patch.object(
+            runtime_admin, "wait_for_health"
+        ), mock.patch.object(
+            runtime_admin, "reconcile_platform_release_change"
+        ), mock.patch.object(runtime_admin, "atomic_json"):
+            runtime_admin.recover_pending_release_switch(release, profile, paths)
+        assert calls == [["docker", "start", release["containerName"]]]
+
+
+def test_release_container_missing_detection_does_not_hide_docker_outage():
+    missing = mock.Mock(
+        returncode=1,
+        stdout="",
+        stderr="Error: No such object: zhuojian-aifabei-new-app",
+    )
+    unavailable = mock.Mock(
+        returncode=1,
+        stdout="",
+        stderr="Cannot connect to the Docker daemon",
+    )
+    with mock.patch.object(runtime_admin, "run", return_value=missing):
+        assert (
+            runtime_admin.inspect_managed_release_container(
+                "zhuojian-aifabei-new-app", "new-app", {"enterpriseKey": "aifabei"},
+                allow_missing=True,
+            )
+            is None
+        )
+    with mock.patch.object(
+        runtime_admin, "run", return_value=unavailable
+    ), pytest.raises(runtime_admin.AdminError, match="cannot inspect"):
+        runtime_admin.inspect_managed_release_container(
+            "zhuojian-aifabei-new-app",
+            "new-app",
+            {"enterpriseKey": "aifabei"},
+            allow_missing=True,
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("running", False, "not running"),
+        ("commit", "c" * 40, "does not match"),
+        ("image", "zhuojian/aifabei/new-app:latest", "does not match"),
+    ],
+)
+def test_publish_identity_requires_running_exact_commit_label_and_config_image(
+    field, value, message
+):
+    with tempfile.TemporaryDirectory() as directory:
+        paths = paths_for(Path(directory))
+        profile = profile_for(paths)
+        release = release_for_switch(paths)
+        container = {
+            "name": release["containerName"],
+            "running": True,
+            "commit": "a" * 40,
+            "image": f"zhuojian/aifabei/new-app:{'a' * 40}",
+        }
+        container[field] = value
+        with mock.patch.object(
+            runtime_admin, "inspect_managed_release_container", return_value=container
+        ), pytest.raises(runtime_admin.AdminError, match=message):
+            runtime_admin.verify_release_runtime_identity(release, profile)
+
+
+def test_publish_identity_returns_the_exact_running_release():
+    with tempfile.TemporaryDirectory() as directory:
+        paths = paths_for(Path(directory))
+        profile = profile_for(paths)
+        release = release_for_switch(paths)
+        container = {
+            "name": release["containerName"],
+            "running": True,
+            "commit": "a" * 40,
+            "image": f"zhuojian/aifabei/new-app:{'a' * 40}",
+        }
+        with mock.patch.object(
+            runtime_admin, "inspect_managed_release_container", return_value=container
+        ):
+            identity = runtime_admin.verify_release_runtime_identity(release, profile)
+        assert identity == {
+            "applicationSlug": "new-app",
+            "containerName": release["containerName"],
+            "running": True,
+            "commit": "a" * 40,
+            "image": f"zhuojian/aifabei/new-app:{'a' * 40}",
+        }
+
+
+def test_deploy_persists_switch_intent_before_saas_gate_and_docker_mutation():
+    with tempfile.TemporaryDirectory() as directory:
+        paths = paths_for(Path(directory))
+        create_roots(paths)
+        profile = profile_for(paths)
+        release = release_for_switch(paths)
+        target_commit = "b" * 40
+        events = []
+
+        def fake_atomic(_path, value, _mode):
+            phase = (value.get("releaseSwitch") or {}).get("phase", "complete")
+            events.append("persist:" + phase)
+
+        def fake_run(argv, check=True):
+            del check
+            if argv[:2] == ["docker", "build"]:
+                events.append("docker-build")
+            elif argv[:2] == ["docker", "stop"]:
+                events.append("docker-stop")
+            elif argv[:2] == ["docker", "rename"]:
+                events.append("docker-rename")
+            return ok_result()
+
+        current = {
+            "name": release["containerName"],
+            "running": True,
+            "commit": "a" * 40,
+            "image": f"zhuojian/aifabei/new-app:{'a' * 40}",
+        }
+        args = argparse.Namespace(
+            application_slug="new-app",
+            issue_certificate=False,
+            email=None,
+            health_timeout=60,
+        )
+        with mock.patch.object(
+            runtime_admin, "locked", return_value=contextlib.nullcontext()
+        ), mock.patch.object(runtime_admin, "load_runtime", return_value=profile), mock.patch.object(
+            runtime_admin,
+            "disk_state",
+            return_value={"uploadsAllowed": True},
+        ), mock.patch.object(runtime_admin, "write_disk_state"), mock.patch.object(
+            runtime_admin, "git_release", return_value=(target_commit, target_commit[:12])
+        ), mock.patch.object(Path, "is_file", return_value=True), mock.patch.object(
+            runtime_admin, "provision_release", return_value=release
+        ), mock.patch.object(
+            runtime_admin, "inspect_managed_release_container", return_value=current
+        ), mock.patch.object(runtime_admin, "container_exists", return_value=False), mock.patch.object(
+            runtime_admin.secrets, "token_hex", return_value="2" * 32
+        ), mock.patch.object(
+            runtime_admin, "read_optional_plain", return_value=b"old-nginx\n"
+        ), mock.patch.object(runtime_admin, "run", side_effect=fake_run), mock.patch.object(
+            runtime_admin,
+            "begin_platform_release_change",
+            side_effect=lambda *_args: events.append("saas-begin") or True,
+        ), mock.patch.object(
+            runtime_admin,
+            "start_container",
+            side_effect=lambda *_args, **_kwargs: events.append("docker-start"),
+        ), mock.patch.object(runtime_admin, "wait_for_health"), mock.patch.object(
+            runtime_admin, "nginx_text", return_value="new-nginx"
+        ), mock.patch.object(
+            runtime_admin,
+            "replace_nginx",
+            side_effect=lambda *_args: events.append("nginx-applied"),
+        ), mock.patch.object(runtime_admin, "atomic_json", side_effect=fake_atomic):
+            result = runtime_admin.cmd_deploy(args, paths)
+
+        assert events.index("persist:prepared") < events.index("saas-begin")
+        assert events.index("persist:gate-closed") < events.index("docker-stop")
+        assert events.index("persist:switching") < events.index("docker-stop")
+        assert events.index("nginx-applied") < events.index("persist:complete")
+        assert result["commit"] == target_commit
+        assert release["releaseSwitch"]["targetCommit"] == target_commit
+
+
+def test_rollback_uses_the_same_durable_switch_protocol():
+    with tempfile.TemporaryDirectory() as directory:
+        paths = paths_for(Path(directory))
+        profile = profile_for(paths)
+        release = release_for_switch(paths)
+        target_commit = "b" * 40
+        release["history"] = [
+            {
+                "commit": target_commit,
+                "image": f"zhuojian/aifabei/new-app:{target_commit}",
+                "deployedAt": "older",
+            }
+        ]
+        events = []
+
+        def fake_atomic(_path, value, _mode):
+            phase = (value.get("releaseSwitch") or {}).get("phase", "complete")
+            events.append("persist:" + phase)
+
+        def fake_run(argv, check=True):
+            del check
+            if argv[:2] == ["docker", "stop"]:
+                events.append("docker-stop")
+            elif argv[:2] == ["docker", "rename"]:
+                events.append("docker-rename")
+            return ok_result()
+
+        current = {
+            "name": release["containerName"],
+            "running": True,
+            "commit": "a" * 40,
+            "image": f"zhuojian/aifabei/new-app:{'a' * 40}",
+        }
+        args = argparse.Namespace(
+            application_slug="new-app", commit=None, health_timeout=60
+        )
+        with mock.patch.object(
+            runtime_admin, "locked", return_value=contextlib.nullcontext()
+        ), mock.patch.object(runtime_admin, "load_runtime", return_value=profile), mock.patch.object(
+            runtime_admin, "load_release", return_value=release
+        ), mock.patch.object(
+            runtime_admin, "recover_pending_release_switch", return_value=release
+        ), mock.patch.object(
+            runtime_admin, "inspect_managed_release_container", return_value=current
+        ), mock.patch.object(runtime_admin, "container_exists", return_value=False), mock.patch.object(
+            runtime_admin.secrets, "token_hex", return_value="3" * 32
+        ), mock.patch.object(
+            runtime_admin, "read_optional_plain", return_value=b"old-nginx\n"
+        ), mock.patch.object(runtime_admin, "run", side_effect=fake_run), mock.patch.object(
+            runtime_admin,
+            "begin_platform_release_change",
+            side_effect=lambda *_args: events.append("saas-begin") or True,
+        ), mock.patch.object(
+            runtime_admin,
+            "start_container",
+            side_effect=lambda *_args, **_kwargs: events.append("docker-start"),
+        ), mock.patch.object(runtime_admin, "wait_for_health"), mock.patch.object(
+            runtime_admin, "nginx_text", return_value="new-nginx"
+        ), mock.patch.object(
+            runtime_admin,
+            "replace_nginx",
+            side_effect=lambda *_args: events.append("nginx-applied"),
+        ), mock.patch.object(runtime_admin, "atomic_json", side_effect=fake_atomic):
+            result = runtime_admin.cmd_rollback(args, paths)
+
+        assert events.index("persist:prepared") < events.index("saas-begin")
+        assert events.index("persist:switching") < events.index("docker-stop")
+        assert events.index("nginx-applied") < events.index("persist:complete")
+        assert result["commit"] == target_commit

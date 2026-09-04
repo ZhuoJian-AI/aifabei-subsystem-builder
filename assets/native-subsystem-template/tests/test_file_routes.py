@@ -11,13 +11,12 @@ import tempfile
 import threading
 import time
 import unittest
-from unittest import mock
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest import mock
 from uuid import uuid4
-
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -30,7 +29,6 @@ class FileRouteTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         try:
-            import jwt
             from fastapi.testclient import TestClient
         except ImportError as exc:  # pragma: no cover - explains a missing dev install
             raise unittest.SkipTest("install requirements-dev.txt to run route tests") from exc
@@ -40,10 +38,14 @@ class FileRouteTests(unittest.TestCase):
         cls.previous_environment = {
             key: os.environ.get(key)
             for key in (
-                "ZHUOJIAN_INTEGRATION_SECRET",
+                "ZHUOJIAN_MANIFEST_ACCESS_TOKEN",
+                "ZHUOJIAN_SSO_EXCHANGE_TOKEN",
+                "ZHUOJIAN_ACTION_SIGNING_SECRET",
+                "ZHUOJIAN_EVENT_SIGNING_SECRET",
                 "SESSION_SECRET",
                 "ZHUOJIAN_ORGANIZATION_ID",
                 "ZHUOJIAN_PUBLIC_ORIGIN",
+                "ZHUOJIAN_SAAS_ORIGIN",
                 "DATABASE_PATH",
                 "FILE_STORAGE_DRIVER",
                 "FILE_STORAGE_ROOT",
@@ -51,15 +53,22 @@ class FileRouteTests(unittest.TestCase):
                 "FILE_STORAGE_UPLOAD_LOCK_FILE",
             )
         }
-        cls.integration_secret = "integration-secret-used-only-by-route-tests"
-        cls.organization_id = "test-organization"
+        cls.manifest_token = "zjmf_manifest-token-used-only-by-route-tests-123456789"
+        cls.sso_token = "zjss_exchange-token-used-only-by-route-tests-123456789"
+        cls.action_secret = "zjac_action-secret-used-only-by-route-tests-123456789"
+        cls.event_secret = "zjev_event-secret-used-only-by-route-tests-123456789"
+        cls.organization_id = "11111111-1111-4111-8111-111111111111"
         upload_lock = temporary_root / "upload.lock"
         upload_lock.touch()
         os.environ.update({
-            "ZHUOJIAN_INTEGRATION_SECRET": cls.integration_secret,
+            "ZHUOJIAN_MANIFEST_ACCESS_TOKEN": cls.manifest_token,
+            "ZHUOJIAN_SSO_EXCHANGE_TOKEN": cls.sso_token,
+            "ZHUOJIAN_ACTION_SIGNING_SECRET": cls.action_secret,
+            "ZHUOJIAN_EVENT_SIGNING_SECRET": cls.event_secret,
             "SESSION_SECRET": "session-secret-used-only-by-route-tests-123",
             "ZHUOJIAN_ORGANIZATION_ID": cls.organization_id,
             "ZHUOJIAN_PUBLIC_ORIGIN": "https://testserver",
+            "ZHUOJIAN_SAAS_ORIGIN": "https://saas.test.example.com",
             "DATABASE_PATH": str(temporary_root / "subsystem.db"),
             "FILE_STORAGE_DRIVER": "local",
             "FILE_STORAGE_ROOT": str(temporary_root / "files"),
@@ -101,10 +110,12 @@ class FileRouteTests(unittest.TestCase):
             action["actionKey"] for action in module["actions"] if action["operation"] == "delete"
         )
         action_keys = [action["actionKey"] for action in module["actions"]]
-        now = int(time.time())
-        ticket = jwt.encode({
+        now = datetime.now(timezone.utc)
+        launch_nonce = "launch_nonce_used_by_route_tests_1"
+        code = "zjsc_" + "b" * 48
+        claims = {
             "iss": "zhuojian-saas",
-            "typ": "zhuojian-sso",
+            "typ": "zhuojian-sso-code",
             "aud": cls.application.APP_SLUG,
             "sub": "route-test-user",
             "organizationId": cls.organization_id,
@@ -127,22 +138,87 @@ class FileRouteTests(unittest.TestCase):
                         "view", "ai_query", "ai_create", "ai_update",
                         "ai_delete", "ai_approve", "export",
                     ],
+                    "dataScopes": {
+                        permission: {
+                            "unrestricted": False,
+                            "include_self": True,
+                            "own_only": False,
+                            "department_ids": ["ops"],
+                        }
+                        for permission in [
+                            "view", "ai_query", "ai_create", "ai_update",
+                            "ai_delete", "ai_approve", "export",
+                        ]
+                    },
+                    "actionDataScopes": {
+                        action_key: {
+                            "unrestricted": False,
+                            "include_self": True,
+                            "own_only": False,
+                            "department_ids": ["ops"],
+                        }
+                        for action_key in action_keys
+                    },
                 }
             },
             "jti": uuid4().hex,
-            "iat": now,
-            "exp": now + 120,
-        }, cls.integration_secret, algorithm="HS256")
-        response = cls.client.get(
-            "/api/integration/sso",
-            params={"ticket": ticket, "redirect": page["routePattern"]},
-            follow_redirects=False,
+            "launchNonce": launch_nonce,
+            "sessionBindingHash": "b" * 64,
+            "authEpoch": 0,
+            "permissions": [
+                "view", "ai_query", "ai_create", "ai_update",
+                "ai_delete", "ai_approve", "export",
+            ],
+            "iat": now.isoformat(),
+            "exp": (now + timedelta(seconds=120)).isoformat(),
+        }
+        exchange_response = mock.Mock(
+            status_code=200,
+            content=b"{}",
+            headers={"content-type": "application/json"},
         )
+        exchange_response.json.return_value = {
+            "application_id": "22222222-2222-4222-8222-222222222222",
+            "application_slug": cls.application.APP_SLUG,
+            "organization_id": cls.organization_id,
+            "module_key": cls.module_key,
+            "redirect": page["routePattern"],
+            "launch_nonce": launch_nonce,
+            "claims": claims,
+        }
+        with mock.patch.object(cls.application.httpx, "post", return_value=exchange_response):
+            response = cls.client.get(
+                "/api/integration/sso",
+                params={
+                    "code": code,
+                    "redirect": page["routePattern"],
+                    "launch_nonce": launch_nonce,
+                },
+                headers={
+                    "Referer": cls.application.SAAS_ORIGIN + "/terminal",
+                    "Sec-Fetch-Dest": "iframe",
+                },
+                follow_redirects=False,
+            )
         if response.status_code != 302:
             raise AssertionError(response.text)
+        cls.live_session_patcher = mock.patch.object(
+            cls.application,
+            "validate_live_session",
+            side_effect=lambda session, module_key, page_key, action_key=None: (
+                cls.application.action_scoped_actor(session, page_key, action_key)
+                if action_key
+                else {
+                    **session,
+                    "effectiveDataScope": session["pageAccess"][page_key]["dataScopes"]["view"],
+                }
+            ),
+        )
+        cls.live_session_patcher.start()
 
     @classmethod
     def tearDownClass(cls):
+        cls.live_session_patcher.stop()
         cls.client_context.__exit__(None, None, None)
         cls.disk_usage_patcher.stop()
         sys.modules.pop("app", None)
@@ -960,6 +1036,76 @@ class FileRouteTests(unittest.TestCase):
             ).fetchone()
             self.assertEqual(request_row[0], "completed")
             self.assertIn('"deleted": true', request_row[1])
+
+    def test_file_routes_enforce_department_scope(self):
+        upload = self.upload(b"finance-only", "finance-only.bin")
+        self.assertEqual(upload.status_code, 201, upload.text)
+        file_id = upload.json()["fileId"]
+
+        with closing(sqlite3.connect(os.environ["DATABASE_PATH"])) as connection:
+            connection.execute(
+                "UPDATE stored_files SET department_id=?,created_by=? WHERE file_id=?",
+                ("finance", "finance-user", file_id),
+            )
+            connection.commit()
+
+        listing = self.client.get(
+            "/api/ui/files",
+            params={
+                "moduleKey": self.module_key,
+                "pageKey": self.page_key,
+                "actionKey": self.query_action,
+            },
+        )
+        self.assertEqual(listing.status_code, 200, listing.text)
+        self.assertNotIn(file_id, {item["fileId"] for item in listing.json()["items"]})
+
+        download = self.client.get(
+            f"/api/ui/files/{file_id}",
+            params={
+                "moduleKey": self.module_key,
+                "pageKey": self.page_key,
+                "actionKey": self.query_action,
+            },
+        )
+        self.assertEqual(download.status_code, 403, download.text)
+
+        request_id = uuid4().hex
+        params = {"fileId": file_id}
+        confirmation_response = self.client.post(
+            "/api/ui/confirmations",
+            json={
+                "requestId": request_id,
+                "moduleKey": self.module_key,
+                "pageKey": self.page_key,
+                "actionKey": self.delete_action,
+                "operation": "delete",
+                "expectedVersion": 1,
+                "params": params,
+                "confirmed": True,
+                "subject": "stored-file",
+            },
+        )
+        self.assertEqual(confirmation_response.status_code, 201, confirmation_response.text)
+        deleted = self.client.request(
+            "DELETE",
+            f"/api/ui/files/{file_id}",
+            params={
+                "moduleKey": self.module_key,
+                "pageKey": self.page_key,
+                "actionKey": self.delete_action,
+            },
+            json={
+                "requestId": request_id,
+                "moduleKey": self.module_key,
+                "pageKey": self.page_key,
+                "operation": "delete",
+                "expectedVersion": 1,
+                "params": params,
+                "confirmation": confirmation_response.json(),
+            },
+        )
+        self.assertEqual(deleted.status_code, 403, deleted.text)
 
     def test_delete_resumes_same_request_after_process_crash(self):
         payload = b"recoverable-delete"

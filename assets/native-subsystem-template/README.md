@@ -3,8 +3,12 @@
 灼见原生模块骨架，应用标识 `__APPLICATION_SLUG__`，子模块 `__MODULE_KEY__`，ECS 本地 Git 项目名 `__LOCAL_PROJECT_NAME__`。
 
 1. 根据真实业务修改 `subsystem.json`、`app.py` 和页面。
-2. 复制 `.env.example` 为本机 `.env`，填入随机 Secret；不得提交 `.env`。
+2. 本地测试时由开发 AI 从 `.env.example` 生成一次性随机值；生产凭证只由 Runtime 注入，且不得提交 `.env`。
 3. 运行 `docker compose up --build`，确认 `/health` 和协议验收通过。
+
+平台接入由 Runtime 自动完成，包括项目凭证隔离和一次性登录换码。业务负责人不需要申请、复制或配置任何平台凭证。
+
+浏览器只保存一个短小的分区会话标识，完整 SSO 声明保存在模块数据库；每次打开页面或执行 Action 都回 SaaS 复核用户、角色、页面、Action 和当前数据范围。管理员停用账号或改权后无需等待旧会话自然过期。
 
 生产数据保留在模块自己的数据库；不要连接或复制灼见 SaaS 数据库。
 
@@ -13,6 +17,8 @@
 模板的“业务文件”示例已经通过同一 Adapter 完成上传、列表、下载与可恢复删除；浏览器只接触 `fileId` 和版本，数据库内部记录 `storageKey`、后端、文件名、MIME、大小、SHA-256 和业务归属。上传必须提供准确 `Content-Length`，Runtime 用所有系统共享的 `/run/zhuojian/upload.lock` 串行保护请求缓冲与后端提交，并在写入前、逐块写入和提交前同时检查实时 90% 使用率与 5 GiB 磁盘保留线。完整接收正文后，数据库以紧邻后端提交的时间记录 `uploading`，后台再按大小和 SHA-256 收敛“对象已提交但响应丢失”等中断状态；失败项会退避而不堵住后续记录，本地临时文件只存在于保留的 staging 目录并在宽限期后清理。删除必须先由当前 SaaS 会话取得一次性确认声明，再把相同的 `requestId`、参数哈希和 `expectedVersion` 交给删除路由；对象删除和数据库提交之间即使重启，后台 lease 恢复器也会幂等完成。扩展附件能力时复用该模式，不要直接读写 `/data/files`，也不要把绝对路径、Bucket 或临时签名 URL 存入数据库。
 
 Action 的 `requestId` 是 8–128 位受限字符标识。模板在同一个 SQLite 事务里完成业务写入、Outbox、确认消费和幂等结果，两个并发的相同请求只执行一次；请求标识一旦绑定到 Action、用户、参数和版本，就不能换参数复用。页面高风险按钮与平台 Action 共用这套服务端保护，浏览器弹窗本身不算授权。
+
+`status` 等受控状态不能从通用 create/update 参数写入，只能由专门的审批或状态迁移 Action 修改。删除和审批始终要求确认，不能由 Manifest 关闭。
 
 浏览器侧所有会改数据的 `/api/ui/*` 请求还必须带本系统自己的精确 `Origin`；Runtime 通过 `ZHUOJIAN_PUBLIC_ORIGIN` 注入固定 HTTPS origin。灼见父页面和同一公司下的其他子域不能借浏览器会话调用这些接口。
 

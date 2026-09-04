@@ -2,21 +2,23 @@
 """Controlled, local-only deployment foundation for a ZhuoJian enterprise ECS.
 
 This program deliberately has no command that creates or rotates an ECS Runtime
-credential.  It never opens the registration credential; ``doctor`` only uses
-``lstat`` to verify its ownership and mode.
+credential. ``doctor`` only inspects metadata. Deploy and rollback use the
+root-only credential transiently to close SaaS access before switching code;
+the value is never returned, logged, or passed to a child process.
 """
 
 from __future__ import annotations
 
 import argparse
-import copy
+import base64
+import binascii
 import contextlib
+import copy
 import datetime as dt
 import hashlib
 import ipaddress
 import json
 import os
-from pathlib import Path
 import re
 import secrets
 import shutil
@@ -31,8 +33,10 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+from collections.abc import Iterator
 from dataclasses import dataclass
-from typing import Any, Iterator
+from pathlib import Path
+from typing import Any
 
 try:  # Linux production dependency; the fallback permits local syntax/unit tests.
     import fcntl
@@ -43,6 +47,7 @@ except ImportError:  # pragma: no cover - Windows development host
 MANAGED_BY = "zhuojian-runtime-admin/v1"
 SLUG_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 STORAGE_ROTATION_OPERATION_RE = re.compile(r"^[0-9a-f]{32}$")
+RELEASE_SWITCH_OPERATION_RE = re.compile(r"^[0-9a-f]{32}$")
 DOMAIN_RE = re.compile(
     r"^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+"
     r"[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$"
@@ -109,6 +114,12 @@ def validate_storage_rotation_operation_id(value: str) -> str:
     return value
 
 
+def validate_release_switch_operation_id(value: Any) -> str:
+    if not isinstance(value, str) or not RELEASE_SWITCH_OPERATION_RE.fullmatch(value):
+        raise AdminError("release switch operation id must be 32 lowercase hexadecimal characters")
+    return value
+
+
 def validate_management_host(value: str) -> str:
     if not value or value != value.strip() or any(ch in value for ch in "/\\:@[] \t\r\n"):
         raise AdminError("management host must be one plain IP address or DNS name")
@@ -166,7 +177,7 @@ def normalize_aliyun_region(value: Any) -> str:
 
     if not isinstance(value, str) or value != value.strip():
         raise AdminError("OSS region must be an Alibaba Cloud region ID")
-    normalized = value[4:] if value.startswith("oss-") else value
+    normalized = value.removeprefix("oss-")
     if normalized.startswith("oss-") or not REGION_RE.fullmatch(normalized):
         raise AdminError("OSS region must be an Alibaba Cloud region ID")
     return normalized
@@ -325,6 +336,175 @@ def secure_file_metadata(path: Path, label: str) -> dict[str, Any]:
     return {"exists": True, "ownerUid": info.st_uid, "mode": f"{mode:04o}", "secure": True}
 
 
+def runtime_registration_credential(paths: Paths = PATHS) -> str:
+    """Read the fixed root-only Runtime credential without exposing its value."""
+
+    secure_file_metadata(paths.credential, "Runtime registration credential")
+    try:
+        if paths.credential.stat().st_size > 4096:
+            raise AdminError("Runtime registration credential file is too large")
+        value = paths.credential.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeError) as exc:
+        raise AdminError("Runtime registration credential cannot be read") from exc
+    if len(value) < 32 or not value.startswith("zjrt_"):
+        raise AdminError("Runtime registration credential is invalid")
+    return value
+
+
+def platform_release_request(
+    profile: dict[str, Any],
+    paths: Paths,
+    method: str,
+    endpoint: str,
+    body: dict[str, Any] | None = None,
+    *,
+    allow_not_found: bool = False,
+) -> tuple[int, dict[str, Any] | None]:
+    """Call the Runtime-scoped release API without using ambient proxies."""
+
+    payload = json.dumps(body, separators=(",", ":")).encode() if body is not None else None
+    headers = {
+        "Authorization": f"Bearer {runtime_registration_credential(paths)}",
+        "Accept": "application/json",
+        "User-Agent": "ZhuoJian-Runtime-Admin/1.0",
+    }
+    if payload is not None:
+        headers["Content-Type"] = "application/json"
+    url = platform_origin(profile) + endpoint
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        with opener.open(
+            urllib.request.Request(url, data=payload, headers=headers, method=method),
+            timeout=20,
+        ) as response:
+            raw = response.read(64 * 1024 + 1)
+            if len(raw) > 64 * 1024:
+                raise AdminError("platform release response is too large")
+            decoded = json.loads(raw) if raw else None
+            if decoded is not None and not isinstance(decoded, dict):
+                raise AdminError("platform release response is invalid")
+            return response.status, decoded
+    except urllib.error.HTTPError as exc:
+        if allow_not_found and exc.code == 404:
+            return 404, None
+        raise AdminError(f"platform release gate returned HTTP {exc.code}") from None
+    except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
+        raise AdminError("platform release gate is unavailable") from exc
+
+
+def begin_platform_release_change(
+    profile: dict[str, Any],
+    paths: Paths,
+    slug: str,
+    target_commit: str,
+) -> bool:
+    """Close an existing SaaS release before changing the live container."""
+
+    encoded_slug = urllib.parse.quote(validate_slug(slug), safe="")
+    status, release = platform_release_request(
+        profile,
+        paths,
+        "GET",
+        f"/api/v1/ecs-publisher/modules/{encoded_slug}",
+        allow_not_found=True,
+    )
+    if status != 404 and (
+        not isinstance(release, dict) or release.get("application_slug") != slug
+    ):
+        raise AdminError("platform release identity does not match this application")
+    platform_release_request(
+        profile,
+        paths,
+        "POST",
+        f"/api/v1/ecs-publisher/modules/{encoded_slug}/begin-change",
+        {"target_commit": target_commit},
+    )
+    if status != 404:
+        return True
+
+    # A legacy application can exist before its first Runtime release record.
+    # The POST adopts and closes that application.  Read back the result so a
+    # genuinely new slug (where the POST is intentionally a no-op) is not
+    # mistaken for an active release intent.
+    follow_up_status, follow_up = platform_release_request(
+        profile,
+        paths,
+        "GET",
+        f"/api/v1/ecs-publisher/modules/{encoded_slug}",
+        allow_not_found=True,
+    )
+    if follow_up_status == 404:
+        return False
+    if not isinstance(follow_up, dict) or follow_up.get("application_slug") != slug:
+        raise AdminError("platform release identity does not match this application")
+    return True
+
+
+def cancel_platform_release_change(
+    profile: dict[str, Any],
+    paths: Paths,
+    slug: str,
+    target_commit: str,
+) -> None:
+    encoded_slug = urllib.parse.quote(validate_slug(slug), safe="")
+    platform_release_request(
+        profile,
+        paths,
+        "POST",
+        f"/api/v1/ecs-publisher/modules/{encoded_slug}/cancel-change",
+        {"target_commit": target_commit},
+        allow_not_found=True,
+    )
+
+
+def reconcile_platform_release_change(
+    profile: dict[str, Any],
+    paths: Paths,
+    slug: str,
+    target_commit: str,
+    previous_commit: str | None,
+) -> None:
+    """Idempotently cancel only the matching still-open Runtime intent.
+
+    A process can die after either begin/cancel reached SaaS but before its
+    response or the following disk write.  GET makes both uncertain windows
+    observable without ever canceling another deployment's intent.
+    """
+
+    encoded_slug = urllib.parse.quote(validate_slug(slug), safe="")
+    status, release = platform_release_request(
+        profile,
+        paths,
+        "GET",
+        f"/api/v1/ecs-publisher/modules/{encoded_slug}",
+        allow_not_found=True,
+    )
+    if status == 404:
+        return
+    if not isinstance(release, dict) or release.get("application_slug") != slug:
+        raise AdminError("platform release identity does not match this application")
+    metadata = release.get("release_metadata")
+    intent = metadata.get("changeIntent") if isinstance(metadata, dict) else None
+    intent_target = intent.get("targetCommit") if isinstance(intent, dict) else None
+    if (
+        release.get("status") == "verifying"
+        and release.get("requested_commit") == target_commit
+        and intent_target == target_commit
+    ):
+        cancel_platform_release_change(profile, paths, slug, target_commit)
+        return
+    if intent_target is not None:
+        raise AdminError("SaaS contains a different pending release intent; refusing to cancel it")
+    if (
+        previous_commit != target_commit
+        and release.get("requested_commit") == target_commit
+        and release.get("status") in {"healthy", "pending_review", "failed"}
+    ):
+        raise AdminError("SaaS release advanced while the local switch was interrupted")
+    # No matching changeIntent means begin never took effect, or a previous
+    # recovery already canceled it and lost the response.  Both are converged.
+
+
 def validate_storage_mode(value: Any) -> str:
     aliases = {"local": LOCAL_STORAGE_MODE, "oss": OSS_STORAGE_MODE}
     value = aliases.get(value, value)
@@ -470,7 +650,7 @@ def inspect_storage_network(
         if member_name in allowed_names:
             continue
         rollback_name = isinstance(member_name, str) and re.fullmatch(
-            rf"{re.escape(canonical)}-rollback-(?:(?:storage|current)-)?[0-9a-f]{{12}}",
+            rf"{re.escape(canonical)}-rollback-(?:(?:storage|current|release)-)?[0-9a-f]{{12}}",
             member_name,
         )
         if not rollback_name:
@@ -480,9 +660,11 @@ def inspect_storage_network(
                 "docker",
                 "inspect",
                 "--format",
-                '{{ index .Config.Labels "com.zhuojian.managed-by" }}|'
-                '{{ index .Config.Labels "com.zhuojian.application" }}|'
-                '{{ index .Config.Labels "com.zhuojian.enterprise" }}|{{.State.Running}}',
+                (
+                    '{{ index .Config.Labels "com.zhuojian.managed-by" }}|'
+                    '{{ index .Config.Labels "com.zhuojian.application" }}|'
+                    '{{ index .Config.Labels "com.zhuojian.enterprise" }}|{{.State.Running}}'
+                ),
                 member_name,
             ],
             check=False,
@@ -1021,6 +1203,69 @@ def assert_managed_container(name: str, slug: str, profile: dict[str, Any]) -> N
         raise AdminError(f"refusing to alter unknown container: {name}")
 
 
+def inspect_managed_release_container(
+    name: str,
+    slug: str,
+    profile: dict[str, Any],
+    *,
+    allow_missing: bool = False,
+) -> dict[str, Any] | None:
+    """Read ownership and immutable release identity in one Docker snapshot."""
+
+    result = run(
+        [
+            "docker",
+            "inspect",
+            "--format",
+            (
+                '{{.State.Running}}|{{ index .Config.Labels "com.zhuojian.managed-by" }}|'
+                '{{ index .Config.Labels "com.zhuojian.application" }}|'
+                '{{ index .Config.Labels "com.zhuojian.enterprise" }}|'
+                '{{ index .Config.Labels "com.zhuojian.commit" }}|{{.Config.Image}}'
+            ),
+            name,
+        ],
+        check=False,
+    )
+    if result.returncode:
+        detail = (result.stderr or result.stdout).strip()
+        missing = re.search(r"no such (?:object|container)", detail, re.IGNORECASE)
+        if allow_missing and missing:
+            return None
+        raise AdminError(f"cannot inspect managed release container: {name}")
+    parts = result.stdout.strip().split("|", 5)
+    if len(parts) != 6:
+        raise AdminError(f"managed release container returned invalid metadata: {name}")
+    running, managed_by, application, enterprise, commit, image = parts
+    if (
+        managed_by != MANAGED_BY
+        or application != slug
+        or enterprise != profile["enterpriseKey"]
+    ):
+        raise AdminError(f"refusing to alter unknown container: {name}")
+    if running not in {"true", "false"}:
+        raise AdminError(f"managed release container returned invalid running state: {name}")
+    if not re.fullmatch(r"[0-9a-f]{40}", commit):
+        raise AdminError(f"managed release container has an invalid commit label: {name}")
+    return {
+        "name": name,
+        "running": running == "true",
+        "commit": commit,
+        "image": image,
+    }
+
+
+def assert_container_release_identity(
+    container: dict[str, Any],
+    commit: str,
+    image: str,
+) -> None:
+    if container.get("commit") != commit or container.get("image") != image:
+        raise AdminError(
+            f"managed container release identity does not match release.json: {container.get('name')}"
+        )
+
+
 def container_running(name: str) -> bool:
     if not container_exists(name):
         return False
@@ -1145,6 +1390,25 @@ def upsert_env_value(payload: bytes, key: str, value: str) -> bytes:
     return "".join(updated).encode("utf-8")
 
 
+def ensure_env_value(payload: bytes, key: str, value: str) -> bytes:
+    """Add a generated secret/config value once without rotating an existing value."""
+
+    try:
+        text = payload.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise AdminError("application env must be valid UTF-8") from exc
+    matches = [
+        line.split("=", 1)[1]
+        for line in text.splitlines()
+        if line and not line.startswith("#") and line.split("=", 1)[0] == key
+    ]
+    if len(matches) > 1:
+        raise AdminError(f"application env contains duplicate managed key: {key}")
+    if matches:
+        return payload
+    return upsert_env_value(payload, key, value)
+
+
 def ensure_env(slug: str, profile: dict[str, Any], paths: Paths = PATHS) -> Path:
     slug = validate_slug(slug)
     target = paths.apps_env / f"{slug}.env"
@@ -1153,12 +1417,20 @@ def ensure_env(slug: str, profile: dict[str, Any], paths: Paths = PATHS) -> Path
     if target.exists() or target.is_symlink():
         previous = read_secure_application_env(target)
         updated = upsert_env_value(previous, "ZHUOJIAN_SAAS_ORIGINS", saas_origin)
+        updated = upsert_env_value(updated, "ZHUOJIAN_SAAS_ORIGIN", saas_origin)
         updated = upsert_env_value(updated, "ZHUOJIAN_PUBLIC_ORIGIN", public_origin)
         updated = upsert_env_value(
             updated,
             "FILE_STORAGE_UPLOAD_LOCK_FILE",
             "/run/zhuojian/upload.lock",
         )
+        for key, prefix in (
+            ("ZHUOJIAN_MANIFEST_ACCESS_TOKEN", "zjmf_"),
+            ("ZHUOJIAN_SSO_EXCHANGE_TOKEN", "zjss_"),
+            ("ZHUOJIAN_ACTION_SIGNING_SECRET", "zjac_"),
+            ("ZHUOJIAN_EVENT_SIGNING_SECRET", "zjev_"),
+        ):
+            updated = ensure_env_value(updated, key, prefix + secrets.token_urlsafe(48))
         if updated != previous:
             atomic_write(target, updated, 0o600)
         return target
@@ -1168,7 +1440,11 @@ def ensure_env(slug: str, profile: dict[str, Any], paths: Paths = PATHS) -> Path
         "ZHUOJIAN_APPLICATION_SLUG": slug,
         "ZHUOJIAN_PUBLIC_ORIGIN": public_origin,
         "ZHUOJIAN_SAAS_ORIGINS": saas_origin,
-        "ZHUOJIAN_INTEGRATION_SECRET": secrets.token_urlsafe(48),
+        "ZHUOJIAN_SAAS_ORIGIN": saas_origin,
+        "ZHUOJIAN_MANIFEST_ACCESS_TOKEN": "zjmf_" + secrets.token_urlsafe(48),
+        "ZHUOJIAN_SSO_EXCHANGE_TOKEN": "zjss_" + secrets.token_urlsafe(48),
+        "ZHUOJIAN_ACTION_SIGNING_SECRET": "zjac_" + secrets.token_urlsafe(48),
+        "ZHUOJIAN_EVENT_SIGNING_SECRET": "zjev_" + secrets.token_urlsafe(48),
         "SESSION_SECRET": secrets.token_urlsafe(48),
         "FILE_STORAGE_DRIVER": "local",
         "FILE_STORAGE_ROOT": "/data/files",
@@ -1326,6 +1602,9 @@ def cmd_certify(args: argparse.Namespace, paths: Paths = PATHS) -> dict[str, Any
         names = expected_names(slug, profile, paths)
         nginx_path = Path(names["nginxConfig"])
         release_exists = release_path(slug, paths).exists()
+        if release_exists:
+            release = load_release(slug, profile, paths)
+            recover_pending_release_switch(release, profile, paths)
         if nginx_path.exists() and not release_exists:
             raise AdminError(f"refusing unknown Nginx configuration: {nginx_path}")
         previous = replace_nginx(nginx_path, challenge_text(names["hostname"], paths).encode())
@@ -1340,6 +1619,7 @@ def provision_release(slug: str, profile: dict[str, Any], paths: Paths = PATHS) 
     target = release_path(slug, paths)
     if target.exists():
         release = load_release(slug, profile, paths)
+        release = recover_pending_release_switch(release, profile, paths)
         require_no_pending_storage_rotation(release)
         # Runtime-owned non-secret settings evolve with the template.  Refresh
         # them for existing releases before a new image is started, while
@@ -1452,10 +1732,307 @@ def rollback_container(
         wait_for_health(release["port"], release["hostname"])
 
 
+RELEASE_SWITCH_PHASES = {
+    "prepared",
+    "gate-closing",
+    "gate-closed",
+    "switching",
+    "healthy",
+    "nginx-applied",
+    "restored",
+}
+
+
+def validated_recorded_release_identity(
+    release: dict[str, Any],
+    profile: dict[str, Any],
+    *,
+    required: bool,
+) -> tuple[str, str] | None:
+    current = release.get("current")
+    if current is None and not required:
+        return None
+    if not isinstance(current, dict):
+        raise AdminError("release.json does not contain a current immutable release")
+    commit = current.get("commit")
+    image = current.get("image")
+    expected_image = (
+        f"zhuojian/{profile['enterpriseKey']}/{release['applicationSlug']}:{commit}"
+    )
+    if (
+        not isinstance(commit, str)
+        or not re.fullmatch(r"[0-9a-f]{40}", commit)
+        or image != expected_image
+    ):
+        raise AdminError("release.json current commit/image identity is invalid")
+    return commit, image
+
+
+def encode_nginx_snapshot(payload: bytes | None) -> dict[str, Any]:
+    if payload is None:
+        return {"present": False}
+    if len(payload) > 1024 * 1024:
+        raise AdminError("managed Nginx configuration is unexpectedly large")
+    return {"present": True, "base64": base64.b64encode(payload).decode("ascii")}
+
+
+def decode_nginx_snapshot(value: Any) -> bytes | None:
+    if not isinstance(value, dict) or not isinstance(value.get("present"), bool):
+        raise AdminError("release switch contains an invalid Nginx snapshot")
+    if value["present"] is False:
+        if set(value) != {"present"}:
+            raise AdminError("release switch contains an invalid absent Nginx snapshot")
+        return None
+    encoded = value.get("base64")
+    if not isinstance(encoded, str) or len(encoded) > 2 * 1024 * 1024:
+        raise AdminError("release switch contains an invalid Nginx snapshot")
+    try:
+        payload = base64.b64decode(encoded, validate=True)
+    except (ValueError, binascii.Error):
+        raise AdminError("release switch contains an invalid Nginx snapshot") from None
+    if len(payload) > 1024 * 1024:
+        raise AdminError("release switch Nginx snapshot is unexpectedly large")
+    return payload
+
+
+def validated_release_switch_marker(
+    release: dict[str, Any], profile: dict[str, Any]
+) -> dict[str, Any] | None:
+    marker = release.get("releaseSwitch")
+    if marker is None:
+        return None
+    if not isinstance(marker, dict):
+        raise AdminError("release contains an invalid release switch marker")
+    operation_id = validate_release_switch_operation_id(marker.get("operationId"))
+    if marker.get("kind") not in {"deploy", "rollback"}:
+        raise AdminError("release contains an invalid release switch kind")
+    if marker.get("phase") not in RELEASE_SWITCH_PHASES:
+        raise AdminError("release contains an invalid release switch phase")
+    health_timeout = marker.get("healthTimeout")
+    if (
+        isinstance(health_timeout, bool)
+        or not isinstance(health_timeout, int)
+        or not 1 <= health_timeout <= 300
+    ):
+        raise AdminError("release contains an invalid release switch health timeout")
+    platform_intent_started = marker.get("platformIntentStarted")
+    if platform_intent_started is not None and not isinstance(platform_intent_started, bool):
+        raise AdminError("release contains an invalid SaaS release intent state")
+    target_commit = marker.get("targetCommit")
+    target_image = marker.get("targetImage")
+    expected_target_image = (
+        f"zhuojian/{profile['enterpriseKey']}/{release['applicationSlug']}:{target_commit}"
+    )
+    if (
+        not isinstance(target_commit, str)
+        or not re.fullmatch(r"[0-9a-f]{40}", target_commit)
+        or target_image != expected_target_image
+    ):
+        raise AdminError("release switch target commit/image identity is invalid")
+    previous = validated_recorded_release_identity(release, profile, required=False)
+    previous_commit = marker.get("previousCommit")
+    previous_image = marker.get("previousImage")
+    had_existing = marker.get("hadExisting")
+    if not isinstance(had_existing, bool):
+        raise AdminError("release contains an invalid previous-container state")
+    if previous is None:
+        if had_existing or previous_commit is not None or previous_image is not None:
+            raise AdminError("release switch does not match the provisioned release")
+    elif not had_existing or previous != (previous_commit, previous_image):
+        raise AdminError("release switch no longer matches release.json current")
+    expected_rollback = (
+        f"{release['containerName']}-rollback-release-{operation_id[:12]}"
+    )
+    if marker.get("rollbackContainer") != expected_rollback:
+        raise AdminError("release contains an invalid release switch rollback name")
+    decode_nginx_snapshot(marker.get("previousNginx"))
+    if release.get("storageRotation") is not None:
+        raise AdminError("release cannot switch code during storage credential rotation")
+    return marker
+
+
+def persist_release_switch_phase(
+    release: dict[str, Any], phase: str, paths: Paths = PATHS
+) -> None:
+    marker = release.get("releaseSwitch")
+    if not isinstance(marker, dict) or phase not in RELEASE_SWITCH_PHASES:
+        raise AdminError("cannot persist an invalid release switch phase")
+    marker["phase"] = phase
+    release["updatedAt"] = utc_now()
+    atomic_json(release_path(release["applicationSlug"], paths), release, 0o640)
+
+
+def create_release_switch_marker(
+    release: dict[str, Any],
+    profile: dict[str, Any],
+    paths: Paths,
+    *,
+    kind: str,
+    target_commit: str,
+    target_image: str,
+    health_timeout: int,
+    previous_nginx: bytes | None,
+) -> dict[str, Any]:
+    if release.get("releaseSwitch") is not None:
+        raise AdminError("another release switch is already pending")
+    require_no_pending_storage_rotation(release)
+    previous = validated_recorded_release_identity(release, profile, required=False)
+    if kind not in {"deploy", "rollback"}:
+        raise AdminError("release switch kind is invalid")
+    if (
+        isinstance(health_timeout, bool)
+        or not isinstance(health_timeout, int)
+        or not 1 <= health_timeout <= 300
+    ):
+        raise AdminError("release switch health timeout must be between 1 and 300 seconds")
+    expected_target = (
+        f"zhuojian/{profile['enterpriseKey']}/{release['applicationSlug']}:{target_commit}"
+    )
+    if (
+        not isinstance(target_commit, str)
+        or not re.fullmatch(r"[0-9a-f]{40}", target_commit)
+        or target_image != expected_target
+    ):
+        raise AdminError("release switch target must be an exact managed SHA image")
+    operation_id = secrets.token_hex(16)
+    rollback_name = (
+        f"{release['containerName']}-rollback-release-{operation_id[:12]}"
+    )
+    if container_exists(rollback_name):
+        raise AdminError(f"release switch rollback container name collision: {rollback_name}")
+    marker = {
+        "operationId": operation_id,
+        "kind": kind,
+        "phase": "prepared",
+        "healthTimeout": health_timeout,
+        "targetCommit": target_commit,
+        "targetImage": target_image,
+        "previousCommit": previous[0] if previous else None,
+        "previousImage": previous[1] if previous else None,
+        "hadExisting": previous is not None,
+        "rollbackContainer": rollback_name,
+        "previousNginx": encode_nginx_snapshot(previous_nginx),
+        "platformIntentStarted": None,
+        "requestedAt": utc_now(),
+    }
+    release["releaseSwitch"] = marker
+    release["updatedAt"] = utc_now()
+    atomic_json(release_path(release["applicationSlug"], paths), release, 0o640)
+    return marker
+
+
+def recover_pending_release_switch(
+    release: dict[str, Any], profile: dict[str, Any], paths: Paths = PATHS
+) -> dict[str, Any]:
+    """Restore the pre-switch runtime, then and only then reopen the SaaS gate."""
+
+    marker = validated_release_switch_marker(release, profile)
+    if marker is None:
+        return release
+    slug = release["applicationSlug"]
+    canonical = release["containerName"]
+    rollback_name = marker["rollbackContainer"]
+    previous_commit = marker["previousCommit"]
+    previous_image = marker["previousImage"]
+    target_commit = marker["targetCommit"]
+    target_image = marker["targetImage"]
+    had_existing = marker["hadExisting"]
+
+    rollback = inspect_managed_release_container(
+        rollback_name, slug, profile, allow_missing=True
+    )
+    canonical_state = inspect_managed_release_container(
+        canonical, slug, profile, allow_missing=True
+    )
+    if had_existing:
+        assert isinstance(previous_commit, str) and isinstance(previous_image, str)
+        if rollback is not None:
+            assert_container_release_identity(rollback, previous_commit, previous_image)
+            if canonical_state is not None:
+                assert_container_release_identity(canonical_state, target_commit, target_image)
+            if rollback["running"]:
+                run(["docker", "stop", "--time", "30", rollback_name])
+            if canonical_state is not None:
+                run(["docker", "rm", "--force", canonical])
+            run(["docker", "rename", rollback_name, canonical])
+            run(["docker", "start", canonical])
+        elif canonical_state is None:
+            raise AdminError(
+                "interrupted release switch lost both current and rollback containers; "
+                "SaaS remains blocked"
+            )
+        else:
+            assert_container_release_identity(canonical_state, previous_commit, previous_image)
+            if not canonical_state["running"]:
+                run(["docker", "start", canonical])
+    else:
+        if rollback is not None:
+            raise AdminError(
+                "first deployment has an unexpected rollback container; SaaS remains blocked"
+            )
+        if canonical_state is not None:
+            assert_container_release_identity(canonical_state, target_commit, target_image)
+            run(["docker", "rm", "--force", canonical])
+
+    restore_nginx(Path(release["nginxConfig"]), decode_nginx_snapshot(marker["previousNginx"]))
+    if had_existing:
+        wait_for_health(release["port"], release["hostname"], marker["healthTimeout"])
+
+    # Persist that local recovery is complete before touching SaaS.  If power
+    # fails during cancel, the next invocation safely repeats the same checks.
+    if marker["phase"] == "prepared":
+        marker["platformIntentStarted"] = False
+    persist_release_switch_phase(release, "restored", paths)
+    if marker.get("platformIntentStarted") is not False:
+        reconcile_platform_release_change(
+            profile,
+            paths,
+            slug,
+            target_commit,
+            previous_commit,
+        )
+
+    recovered = copy.deepcopy(release)
+    recovered.pop("releaseSwitch", None)
+    recovered["updatedAt"] = utc_now()
+    atomic_json(release_path(slug, paths), recovered, 0o640)
+    return recovered
+
+
+def verify_release_runtime_identity(
+    release: dict[str, Any], profile: dict[str, Any]
+) -> dict[str, Any]:
+    """Fail unless Docker and release.json identify one exact running release."""
+
+    if validated_release_switch_marker(release, profile) is not None:
+        raise AdminError("release switch is pending; publishing is refused")
+    require_no_pending_storage_rotation(release)
+    identity = validated_recorded_release_identity(release, profile, required=True)
+    assert identity is not None
+    commit, image = identity
+    container = inspect_managed_release_container(
+        release["containerName"], release["applicationSlug"], profile
+    )
+    assert container is not None
+    assert_container_release_identity(container, commit, image)
+    if not container["running"]:
+        raise AdminError("canonical managed container is not running")
+    return {
+        "applicationSlug": release["applicationSlug"],
+        "containerName": release["containerName"],
+        "running": True,
+        "commit": commit,
+        "image": image,
+    }
+
+
 def cmd_deploy(args: argparse.Namespace, paths: Paths = PATHS) -> dict[str, Any]:
     slug = validate_slug(args.application_slug)
     with locked(paths):
         profile = load_runtime(paths)
+        if release_path(slug, paths).exists():
+            pending_release = load_release(slug, profile, paths)
+            recover_pending_release_switch(pending_release, profile, paths)
         state = disk_state(paths)
         write_disk_state(state, paths)
         if not state["uploadsAllowed"]:
@@ -1470,6 +2047,10 @@ def cmd_deploy(args: argparse.Namespace, paths: Paths = PATHS) -> dict[str, Any]
         # Claim only an entirely new namespace or a record already owned by this
         # tool before installing an ACME challenge virtual host.
         release = provision_release(slug, profile, paths)
+        if release.get("current") and release.get("status") == "awaiting_platform_registration":
+            raise AdminError(
+                "current release still awaits SaaS registration; publish or reconcile it before deploying again"
+            )
         nginx_path = Path(release["nginxConfig"])
         if not (cert_dir / "fullchain.pem").is_file():
             previous_nginx = replace_nginx(
@@ -1482,12 +2063,21 @@ def cmd_deploy(args: argparse.Namespace, paths: Paths = PATHS) -> dict[str, Any]
                 # build/health failure must never leave the challenge-only host.
                 restore_nginx(nginx_path, previous_nginx)
         canonical = release["containerName"]
-        had_existing = container_exists(canonical)
+        canonical_state = inspect_managed_release_container(
+            canonical, slug, profile, allow_missing=True
+        )
+        recorded_identity = validated_recorded_release_identity(
+            release, profile, required=False
+        )
+        if (canonical_state is None) != (recorded_identity is None):
+            raise AdminError(
+                "canonical managed container and release.json current must either both exist or both be absent"
+            )
+        had_existing = canonical_state is not None
         if had_existing:
-            assert_managed_container(canonical, slug, profile)
-            if not release.get("current"):
-                raise AdminError("managed container exists without a current release record")
-            if not container_running(canonical):
+            assert recorded_identity is not None and canonical_state is not None
+            assert_container_release_identity(canonical_state, *recorded_identity)
+            if not canonical_state["running"]:
                 raise AdminError("current managed container is stopped; refusing an update switch")
             wait_for_health(release["port"], release["hostname"], timeout=10)
         run([
@@ -1496,56 +2086,70 @@ def cmd_deploy(args: argparse.Namespace, paths: Paths = PATHS) -> dict[str, Any]
             "--label", f"com.zhuojian.application={slug}",
             "--label", f"com.zhuojian.commit={commit}", "--tag", image, str(project),
         ])
-        previous_name: str | None = None
-        if had_existing:
-            previous_name = f"{canonical}-rollback-{secrets.token_hex(6)}"
-            if container_exists(previous_name):
-                raise AdminError(f"rollback container name collision: {previous_name}")
         old_nginx = read_optional_plain(nginx_path)
-        original_release = copy.deepcopy(release)
-        old_stopped = False
-        old_renamed = False
+        marker = create_release_switch_marker(
+            release,
+            profile,
+            paths,
+            kind="deploy",
+            target_commit=commit,
+            target_image=image,
+            health_timeout=args.health_timeout,
+            previous_nginx=old_nginx,
+        )
+        previous_name = marker["rollbackContainer"]
         try:
+            persist_release_switch_phase(release, "gate-closing", paths)
+            marker["platformIntentStarted"] = begin_platform_release_change(
+                profile,
+                paths,
+                slug,
+                commit,
+            )
+            persist_release_switch_phase(release, "gate-closed", paths)
+            persist_release_switch_phase(release, "switching", paths)
             if had_existing:
                 run(["docker", "stop", "--time", "30", canonical])
-                old_stopped = True
-                assert previous_name is not None
                 run(["docker", "rename", canonical, previous_name])
-                old_renamed = True
             start_container(canonical, image, release, slug, profile, paths)
             wait_for_health(release["port"], release["hostname"], args.health_timeout)
+            persist_release_switch_phase(release, "healthy", paths)
             replace_nginx(nginx_path, nginx_text(slug, release["port"], profile, paths).encode())
-            previous = release.get("current")
-            history = list(release.get("history") or [])
+            persist_release_switch_phase(release, "nginx-applied", paths)
+            committed = copy.deepcopy(release)
+            previous = committed.get("current")
+            history = list(committed.get("history") or [])
             if previous and previous.get("commit") != commit:
                 history.append(previous)
-            release["history"] = history[-20:]
-            release["current"] = {"commit": commit, "image": image, "deployedAt": utc_now()}
-            release["status"] = "healthy"
-            release["updatedAt"] = utc_now()
-            release.pop("lastFailure", None)
-            atomic_json(release_path(slug, paths), release, 0o640)
+            committed["history"] = history[-20:]
+            committed["current"] = {"commit": commit, "image": image, "deployedAt": utc_now()}
+            committed["status"] = "awaiting_platform_registration"
+            committed["updatedAt"] = utc_now()
+            committed.pop("lastFailure", None)
+            committed.pop("releaseSwitch", None)
+            atomic_json(release_path(slug, paths), committed, 0o640)
+            release = committed
         except BaseException:
-            # The canonical name is safe to remove only for a new app, or after
-            # the previous container was positively renamed out of that name.
-            if (not had_existing or old_renamed) and container_exists(canonical):
-                assert_managed_container(canonical, slug, profile)
-                run(["docker", "rm", "--force", canonical], check=False)
-            if old_renamed and previous_name:
-                rollback_container(canonical, None, previous_name, release, profile)
-            elif old_stopped and container_exists(canonical):
-                run(["docker", "start", canonical])
-                wait_for_health(release["port"], release["hostname"])
-            if nginx_path.exists() or old_nginx is not None:
-                restore_nginx(nginx_path, old_nginx)
-            failed_release = original_release
-            failed_release["status"] = "healthy" if failed_release.get("current") else "failed"
-            failed_release["updatedAt"] = utc_now()
-            failed_release["lastFailure"] = {"attemptedCommit": commit, "at": utc_now()}
-            atomic_json(release_path(slug, paths), failed_release, 0o640)
+            try:
+                stored = load_release(slug, profile, paths)
+                if stored.get("releaseSwitch") is not None:
+                    recover_pending_release_switch(stored, profile, paths)
+            except BaseException as recovery_error:
+                raise AdminError(
+                    "release switch recovery is pending; rerun any command for this application "
+                    "after Docker, Nginx, and SaaS are reachable"
+                ) from recovery_error
             raise
-        if previous_name and container_exists(previous_name):
-            assert_managed_container(previous_name, slug, profile)
+        if container_exists(previous_name):
+            previous_container = inspect_managed_release_container(
+                previous_name, slug, profile
+            )
+            assert previous_container is not None
+            previous_identity = marker["previousCommit"], marker["previousImage"]
+            assert all(isinstance(value, str) for value in previous_identity)
+            assert_container_release_identity(previous_container, *previous_identity)
+            if previous_container["running"]:
+                raise AdminError("refusing to remove a running release rollback container")
             # Cleanup failure cannot turn an already committed healthy release
             # into a false deployment failure; the stopped, labeled container is
             # safe for a later exact cleanup.
@@ -1557,7 +2161,7 @@ def cmd_deploy(args: argparse.Namespace, paths: Paths = PATHS) -> dict[str, Any]
         "commit": commit,
         "image": image,
         "loopbackPort": release["port"],
-        "status": "healthy",
+        "status": "awaiting_platform_registration",
     }
 
 
@@ -1657,6 +2261,7 @@ def cmd_rotate_app_storage(args: argparse.Namespace, paths: Paths = PATHS) -> di
     with locked(paths):
         profile = load_runtime(paths)
         release = load_release(slug, profile, paths)
+        release = recover_pending_release_switch(release, profile, paths)
         if release["storageMode"] != OSS_STORAGE_MODE:
             raise AdminError("storage credential rotation is only available for OSS releases")
         current = release.get("current")
@@ -1844,6 +2449,7 @@ def cmd_rollback(args: argparse.Namespace, paths: Paths = PATHS) -> dict[str, An
     with locked(paths):
         profile = load_runtime(paths)
         release = load_release(slug, profile, paths)
+        release = recover_pending_release_switch(release, profile, paths)
         require_no_pending_storage_rotation(release)
         current = release.get("current")
         history = list(release.get("history") or [])
@@ -1863,46 +2469,84 @@ def cmd_rollback(args: argparse.Namespace, paths: Paths = PATHS) -> dict[str, An
         if run(["docker", "image", "inspect", image], check=False).returncode:
             raise AdminError("exact rollback image is not present; refusing to use latest or rebuild")
         canonical = release["containerName"]
-        assert_managed_container(canonical, slug, profile)
-        if not container_running(canonical):
+        current_identity = validated_recorded_release_identity(release, profile, required=True)
+        assert current_identity is not None
+        canonical_state = inspect_managed_release_container(canonical, slug, profile)
+        assert canonical_state is not None
+        assert_container_release_identity(canonical_state, *current_identity)
+        if not canonical_state["running"]:
             raise AdminError("current managed container is stopped; refusing rollback")
         wait_for_health(release["port"], release["hostname"], timeout=10)
-        previous_name = f"{canonical}-rollback-current-{secrets.token_hex(6)}"
-        if container_exists(previous_name):
-            raise AdminError(f"rollback container name collision: {previous_name}")
-        old_stopped = False
-        old_renamed = False
-        original_release = copy.deepcopy(release)
+        nginx_path = Path(release["nginxConfig"])
+        marker = create_release_switch_marker(
+            release,
+            profile,
+            paths,
+            kind="rollback",
+            target_commit=target_commit,
+            target_image=image,
+            health_timeout=args.health_timeout,
+            previous_nginx=read_optional_plain(nginx_path),
+        )
+        previous_name = marker["rollbackContainer"]
         try:
+            persist_release_switch_phase(release, "gate-closing", paths)
+            marker["platformIntentStarted"] = begin_platform_release_change(
+                profile,
+                paths,
+                slug,
+                target_commit,
+            )
+            persist_release_switch_phase(release, "gate-closed", paths)
+            persist_release_switch_phase(release, "switching", paths)
             run(["docker", "stop", "--time", "30", canonical])
-            old_stopped = True
             run(["docker", "rename", canonical, previous_name])
-            old_renamed = True
             start_container(canonical, image, release, slug, profile, paths)
             wait_for_health(release["port"], release["hostname"], args.health_timeout)
+            persist_release_switch_phase(release, "healthy", paths)
+            replace_nginx(
+                nginx_path,
+                nginx_text(slug, release["port"], profile, paths).encode(),
+            )
+            persist_release_switch_phase(release, "nginx-applied", paths)
             remaining = [entry for entry in history if entry is not target]
             remaining.append(current)
-            release["history"] = remaining[-20:]
-            release["current"] = {**target, "deployedAt": utc_now()}
-            release["status"] = "healthy"
-            release["updatedAt"] = utc_now()
-            atomic_json(release_path(slug, paths), release, 0o640)
+            committed = copy.deepcopy(release)
+            committed["history"] = remaining[-20:]
+            committed["current"] = {**target, "deployedAt": utc_now()}
+            committed["status"] = "awaiting_platform_registration"
+            committed["updatedAt"] = utc_now()
+            committed.pop("releaseSwitch", None)
+            atomic_json(release_path(slug, paths), committed, 0o640)
+            release = committed
         except BaseException:
-            if old_renamed and container_exists(canonical):
-                assert_managed_container(canonical, slug, profile)
-                run(["docker", "rm", "--force", canonical], check=False)
-            if old_renamed:
-                rollback_container(canonical, None, previous_name, release, profile)
-            elif old_stopped and container_exists(canonical):
-                run(["docker", "start", canonical])
-                wait_for_health(release["port"], release["hostname"])
-            # If release.json replacement itself failed, make a best-effort
-            # restoration of its exact pre-rollback state.
-            with contextlib.suppress(BaseException):
-                atomic_json(release_path(slug, paths), original_release, 0o640)
+            try:
+                stored = load_release(slug, profile, paths)
+                if stored.get("releaseSwitch") is not None:
+                    recover_pending_release_switch(stored, profile, paths)
+            except BaseException as recovery_error:
+                raise AdminError(
+                    "release switch recovery is pending; rerun any command for this application "
+                    "after Docker, Nginx, and SaaS are reachable"
+                ) from recovery_error
             raise
-        run(["docker", "rm", previous_name], check=False)
-    return {"ok": True, "applicationSlug": slug, "commit": target["commit"], "status": "healthy"}
+        if container_exists(previous_name):
+            previous_container = inspect_managed_release_container(
+                previous_name, slug, profile
+            )
+            assert previous_container is not None
+            previous_identity = marker["previousCommit"], marker["previousImage"]
+            assert all(isinstance(value, str) for value in previous_identity)
+            assert_container_release_identity(previous_container, *previous_identity)
+            if previous_container["running"]:
+                raise AdminError("refusing to remove a running release rollback container")
+            run(["docker", "rm", previous_name], check=False)
+    return {
+        "ok": True,
+        "applicationSlug": slug,
+        "commit": target["commit"],
+        "status": "awaiting_platform_registration",
+    }
 
 
 def reject_symlinks(root: Path) -> None:
@@ -1922,6 +2566,7 @@ def sha256_file(path: Path) -> str:
 
 def backup_one(slug: str, profile: dict[str, Any], paths: Paths = PATHS) -> dict[str, Any]:
     release = load_release(slug, profile, paths)
+    release = recover_pending_release_switch(release, profile, paths)
     if not release.get("current"):
         raise AdminError(f"{slug} has no healthy release to back up")
     data_dir = Path(release["dataDir"])
@@ -2004,6 +2649,7 @@ def cmd_backup_all(args: argparse.Namespace, paths: Paths = PATHS) -> dict[str, 
                 continue
             try:
                 release = load_release(slug, profile, paths)
+                release = recover_pending_release_switch(release, profile, paths)
                 if release.get("current"):
                     results.append(backup_one(slug, profile, paths))
             except AdminError as exc:
@@ -2036,6 +2682,7 @@ def cmd_restore(args: argparse.Namespace, paths: Paths = PATHS) -> dict[str, Any
     with locked(paths):
         profile = load_runtime(paths)
         release = load_release(slug, profile, paths)
+        release = recover_pending_release_switch(release, profile, paths)
         require_no_pending_storage_rotation(release)
         app_backup = (paths.backups / slug).resolve()
         archive = Path(args.archive).resolve()
@@ -2138,38 +2785,42 @@ def cmd_doctor(args: argparse.Namespace, paths: Paths = PATHS) -> dict[str, Any]
 
 
 def cmd_preflight(args: argparse.Namespace, paths: Paths = PATHS) -> dict[str, Any]:
-    """Read-only deploy preflight; never allocates a port or creates app state."""
+    """Deploy preflight; it only mutates state to recover an interrupted switch."""
     slug = validate_slug(args.application_slug)
-    profile = load_runtime(paths)
-    verify_upload_lock(paths)
-    names = expected_names(slug, profile, paths)
-    commit, _ = git_release(Path(names["projectDir"]))
-    state = disk_state(paths)
-    conflicts: list[str] = []
-    record = release_path(slug, paths)
-    if record.exists():
-        release = load_release(slug, profile, paths)
-        storage_mode = release["storageMode"]
-    else:
-        storage_mode = default_storage_mode(profile)
-        for key in ("dataDir", "envFile", "nginxConfig"):
-            candidate = Path(names[key])
-            if candidate.exists() or candidate.is_symlink():
-                conflicts.append(str(candidate))
-        if record.parent.exists():
-            conflicts.append(str(record.parent))
-        if container_exists(names["containerName"]):
-            conflicts.append(names["containerName"])
-    if conflicts:
-        raise AdminError("same-slug unmanaged resources exist: " + ", ".join(conflicts))
-    if storage_mode == OSS_STORAGE_MODE:
-        # Preflight remains read-only: validate the shared foundation without
-        # creating the per-app identity.  prepare/ensure-app performs creation.
-        storage_foundation_ready(profile)
+    with locked(paths):
+        profile = load_runtime(paths)
+        verify_upload_lock(paths)
+        names = expected_names(slug, profile, paths)
+        commit, _ = git_release(Path(names["projectDir"]))
+        state = disk_state(paths)
+        conflicts: list[str] = []
+        record = release_path(slug, paths)
         if record.exists():
-            secure_file_metadata(Path(release["storageEnvFile"]), "application storage environment")
-    if not state["uploadsAllowed"]:
-        raise AdminError("deployment refused by disk policy")
+            release = load_release(slug, profile, paths)
+            release = recover_pending_release_switch(release, profile, paths)
+            storage_mode = release["storageMode"]
+        else:
+            storage_mode = default_storage_mode(profile)
+            for key in ("dataDir", "envFile", "nginxConfig"):
+                candidate = Path(names[key])
+                if candidate.exists() or candidate.is_symlink():
+                    conflicts.append(str(candidate))
+            if record.parent.exists():
+                conflicts.append(str(record.parent))
+            if container_exists(names["containerName"]):
+                conflicts.append(names["containerName"])
+        if conflicts:
+            raise AdminError("same-slug unmanaged resources exist: " + ", ".join(conflicts))
+        if storage_mode == OSS_STORAGE_MODE:
+            # Apart from mandatory interrupted-switch recovery, preflight does
+            # not create an application storage identity.
+            storage_foundation_ready(profile)
+            if record.exists():
+                secure_file_metadata(
+                    Path(release["storageEnvFile"]), "application storage environment"
+                )
+        if not state["uploadsAllowed"]:
+            raise AdminError("deployment refused by disk policy")
     return {
         "ok": True,
         "applicationSlug": slug,
@@ -2206,20 +2857,22 @@ def cmd_prepare(args: argparse.Namespace, paths: Paths = PATHS) -> dict[str, Any
 
 def cmd_status(args: argparse.Namespace, paths: Paths = PATHS) -> dict[str, Any]:
     slug = validate_slug(args.application_slug)
-    profile = load_runtime(paths)
-    release = load_release(slug, profile, paths)
-    canonical = release["containerName"]
-    exists = container_exists(canonical)
-    if exists:
-        assert_managed_container(canonical, slug, profile)
-    running = container_running(canonical) if exists else False
-    healthy = False
-    if running:
-        try:
-            wait_for_health(release["port"], release["hostname"], timeout=3)
-            healthy = True
-        except AdminError:
-            healthy = False
+    with locked(paths):
+        profile = load_runtime(paths)
+        release = load_release(slug, profile, paths)
+        release = recover_pending_release_switch(release, profile, paths)
+        canonical = release["containerName"]
+        exists = container_exists(canonical)
+        if exists:
+            assert_managed_container(canonical, slug, profile)
+        running = container_running(canonical) if exists else False
+        healthy = False
+        if running:
+            try:
+                wait_for_health(release["port"], release["hostname"], timeout=3)
+                healthy = True
+            except AdminError:
+                healthy = False
     return {
         "ok": True,
         "applicationSlug": slug,
@@ -2232,6 +2885,18 @@ def cmd_status(args: argparse.Namespace, paths: Paths = PATHS) -> dict[str, Any]
         "storageMode": release["storageMode"],
         "current": release.get("current"),
     }
+
+
+def cmd_verify_release(args: argparse.Namespace, paths: Paths = PATHS) -> dict[str, Any]:
+    """Recover if needed, then attest the exact release safe to publish."""
+
+    slug = validate_slug(args.application_slug)
+    with locked(paths):
+        profile = load_runtime(paths)
+        release = load_release(slug, profile, paths)
+        release = recover_pending_release_switch(release, profile, paths)
+        identity = verify_release_runtime_identity(release, profile)
+    return {"ok": True, **identity}
 
 
 def parser() -> argparse.ArgumentParser:
@@ -2255,7 +2920,10 @@ def parser() -> argparse.ArgumentParser:
     disk.set_defaults(func=None)
     doctor = sub.add_parser("doctor", help="safe foundation audit (credential metadata only)")
     doctor.set_defaults(func=cmd_doctor)
-    preflight = sub.add_parser("preflight", help="read-only Git, namespace, Runtime, and disk checks")
+    preflight = sub.add_parser(
+        "preflight",
+        help="Git, namespace, Runtime, disk checks, and interrupted-switch recovery",
+    )
     preflight.add_argument("application_slug")
     preflight.set_defaults(func=cmd_preflight)
     prepare = sub.add_parser("prepare", help="allocate fixed paths and loopback port without deployment")
@@ -2270,6 +2938,12 @@ def parser() -> argparse.ArgumentParser:
     status = sub.add_parser("status", help="show non-secret state for one managed application")
     status.add_argument("application_slug")
     status.set_defaults(func=cmd_status)
+    verify_release = sub.add_parser(
+        "verify-release",
+        help="verify canonical Running/commit/image identity before SaaS publication",
+    )
+    verify_release.add_argument("application_slug")
+    verify_release.set_defaults(func=cmd_verify_release)
     certify = sub.add_parser("certify", help="obtain/reuse a Let's Encrypt certificate via HTTP-01")
     certify.add_argument("application_slug")
     certify.add_argument("--email")

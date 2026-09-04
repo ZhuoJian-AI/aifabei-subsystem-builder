@@ -1,14 +1,14 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://zhuojianai.com/schemas/subsystem/manifest-v2.schema.json",
-  "title": "ZhuoJian subsystem manifest v2.4",
+  "title": "ZhuoJian subsystem manifest v2.5",
   "type": "object",
   "additionalProperties": true,
   "required": ["protocol", "version", "contractRevision", "enterprise", "applicationSlug", "applicationName", "eventsUrl", "eventDeliveriesUrl", "auth", "modules"],
   "properties": {
     "protocol": {"const": "zhuojian-subsystem"},
     "version": {"const": 2},
-    "contractRevision": {"const": "2.4"},
+    "contractRevision": {"const": "2.5"},
     "enterprise": {
       "type": "object",
       "additionalProperties": false,
@@ -23,8 +23,11 @@
     "auth": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["ssoPath", "algorithm"],
-      "properties": {"ssoPath": {"const": "/api/integration/sso"}, "algorithm": {"const": "HS256"}}
+      "required": ["ssoPath", "mode"],
+      "properties": {
+        "ssoPath": {"const": "/api/integration/sso"},
+        "mode": {"const": "authorization_code"}
+      }
     },
     "modules": {"type": "array", "minItems": 1, "maxItems": 500, "items": {"$ref": "#/$defs/module"}}
   },

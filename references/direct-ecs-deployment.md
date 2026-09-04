@@ -5,7 +5,7 @@
 ## 不变量
 
 - 项目真源是 `/srv/zhuojian/repositories/{companySlug}-{applicationSlug}` 的本地 Git 仓库，不配置远程地址也能工作。
-- 一个 `applicationSlug` 永远复用同一项目目录、域名、回环端口、数据目录、接入密钥和容器名。
+- 一个 `applicationSlug` 永远复用同一项目目录、域名、回环端口、数据目录、四类项目凭证和容器名。
 - 一个模块系统可包含多个 `moduleKey`；新增子模块不创建新域名、新项目目录或新数据库，除非确实需要独立故障/数据/发布边界。
 - 生产容器只暴露一个 `127.0.0.1:<port>` 给 Nginx；数据库、Redis 和内部 API 不映射公网端口。
 - 部署前必须有干净的本地 Git commit。镜像使用 commit SHA 标识，成功版本写入发布记录，禁止使用裸 `latest` 作为回滚依据。
@@ -29,11 +29,11 @@
    /etc/nginx/conf.d/zhuojian-<enterprise>-<applicationSlug>.conf
    ```
 
-7. 首次生成独立 `ZHUOJIAN_INTEGRATION_SECRET` 和 `SESSION_SECRET`，写入 Secret 文件。含文件能力时按环境档案注入本地存储配置；只有 OSS 模式才创建或复用项目令牌。后续更新复用原存储模式和稳定 `storageKey`；从硬盘迁移 OSS 必须按迁移清单和回滚窗口单独执行，不能夹带在普通发布中。
-8. 构建 `zhuojian/<enterprise>/<applicationSlug>:<commitSHA>`，启动新容器并挂载固定数据目录。先从回环地址检查 `/health`，再原子切换 Nginx；新容器不健康时恢复旧容器和旧镜像。
+7. Runtime 首次生成 Manifest、SSO、Action、Event 四类项目凭证和 `SESSION_SECRET`，写入 Secret 文件；普通更新复用，不由业务 AI 手工轮换。含文件能力时按环境档案注入存储配置。后续更新复用原存储模式和稳定 `storageKey`；从硬盘迁移 OSS 必须单独执行。
+8. 构建 `zhuojian/<enterprise>/<applicationSlug>:<commitSHA>`。已有系统在切换前由 Runtime 自动通知 SaaS 进入发布闸门；此时员工入口和 Action 临时关闭。随后启动新容器并挂载固定数据目录，先从回环地址检查 `/health`，再原子切换 Nginx；新容器不健康时恢复旧容器、取消闸门并继续旧版本。
 9. 为 `https://<applicationSlug>.<domainSuffix>` 写入 Nginx Host 路由并签发/复用 HTTPS 证书。验证证书、`frame-ancestors`、Host 隔离、`/health` 和 Manifest。
-10. 运行 `validate_endpoint.py` 和 `e2e_acceptance.py`。任一项失败都不得登记为成功版本。
-11. 使用 `scripts/publish_subsystem.py` 和 ECS Runtime 登记凭证向灼见登记当前 Git commit、`baseUrl`、`applicationSlug`、镜像引用和模块接入密钥；凭证只从环境档案引用的 Secret 文件读取，模块接入密钥只从环境变量读取，二者都不打印。灼见检查域名后缀、组织、健康与 Manifest 后创建/复用企业应用并同步，默认不创建任何 grant；登记成功后才输出管理员接入回执。
+10. 运行 `validate_endpoint.py` 和 `e2e_acceptance.py`。它们只算登记前技术预检，不得冒充真实员工 SSO 验收；任一项失败都不得登记版本。
+11. 使用 `scripts/publish_subsystem.py` 登记当前 Git commit、`baseUrl`、镜像引用和 Runtime 管理的四类项目凭证；脚本从受控 Secret 文件读取且不打印。灼见检查域名、组织、健康与 Manifest 后创建/复用应用，不自动创建授权。新系统返回 `pending_review` 属于正常结果，需管理员核对差异并启用后才对员工开放。
 
 ## 后续更新
 
@@ -51,6 +51,18 @@
 
 Manifest 同步负责让灼见看到新增、修改或停用的子模块、页面、Action 和事件。新增能力默认为待授权；已有 grant 不得因为 Manifest 更新而自动扩大。
 
+回滚同样必须经过发布闸门并重新登记，不能只换本地容器：
+
+```text
+zhuojian-runtime rollback <applicationSlug> [--commit <commitSHA>]
+python <skill>/scripts/publish_subsystem.py \
+  --project-path <项目目录> \
+  --base-url https://<applicationSlug>.<domainSuffix> \
+  --use-running-release
+```
+
+第一条成功后状态是 `awaiting_platform_registration`，第二条把实际运行的旧 commit、Manifest 和凭证重新交给 SaaS 核对。登记成功或管理员批准前，SaaS 保持关闭；不得把本地健康误报成平台已经可用。
+
 ## 发布登记接口
 
 业务 AI 的首次发布和后续更新使用同一个接口：
@@ -64,12 +76,12 @@ Authorization: Bearer <ECS Runtime 登记凭证>
 
 - `application_slug`、`application_name`：从已验证的 Manifest 取得；
 - `base_url`：必须严格等于 `https://{applicationSlug}.{runtime.domainSuffix}`；
-- `integration_secret`：当前模块自己的 `ZHUOJIAN_INTEGRATION_SECRET`；
+- `credentials`：包含 Runtime 管理的 `manifest_access_token`、`sso_exchange_token`、`action_signing_secret`、`event_signing_secret`，四值有固定类型前缀且互不相同；
 - `source_commit`：干净本地 Git 的完整 commit SHA；
-- `image_ref`：可选的不可变镜像引用；
+- 镜像引用由 Runtime 从真实运行容器核对后自动登记，业务 AI 不填写；
 - `release_metadata`：不超过 64 KiB 的非敏感部署摘要。
 
-平台根据 Runtime 凭证自动锁定 `organizationId`、`enterpriseKey` 和域名后缀，业务 AI不能在请求体中改写这些身份。平台随后读取 Manifest、创建或复用企业应用、保存模块接入配置并执行同步；返回 `healthy` 才算登记成功。返回 `failed` 时模块继续独立运行，但灼见不把失败版本当作成功版本。
+平台根据 Runtime 凭证自动锁定 `organizationId`、`enterpriseKey` 和域名后缀，业务 AI 不能改写这些身份。返回 `healthy` 表示已同步；返回 `pending_review` 表示代码部署成功但新清单尚未获管理员批准，两者都不是自动授权。返回 `failed` 时模块继续独立运行，但灼见不把该版本当作成功版本。
 
 查询当前 Runtime 自己发布的模块使用：
 
@@ -98,6 +110,6 @@ Authorization: Bearer <ECS Runtime 登记凭证>
 - `health`：容器未监听 `0.0.0.0:8000`、环境变量缺失或 `/health` 非 200，拒绝切换 Nginx。
 - `routing`：DNS、80/443、证书或 Nginx 问题，修管理员底座，不修改业务数据。
 - `contract`：Manifest、SSO、Bridge、Action 或 Event 不合格，修业务代码或 Skill。
-- `registration`：登记凭证失效、域名超范围或平台接口缺失，模块保持运行但标记“未接入灼见”，不自动扩大凭证。
+- `registration`：登记凭证失效、域名超范围或平台接口缺失，模块可保持本地运行，但 SaaS 入口维持关闭并标记“等待平台登记”，不自动扩大凭证。
 - `storage`：ECS、本地 Git、数据库或固定文件目录存在丢失风险时停止发布并完成同一恢复点的快照/备份；本地目录、磁盘阈值或权限未验证时不得把文件写入容器层或公开静态目录。
 - `object-storage`：环境明确选择 OSS 时，Bucket、网关或系统前缀授权未通过则停止发布或迁移；不得把 OSS 凭证交给业务 AI，也不得静默切回本地模式。

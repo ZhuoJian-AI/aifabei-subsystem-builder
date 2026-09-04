@@ -12,8 +12,8 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest import mock
 from uuid import uuid4
-
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -37,17 +37,24 @@ class ActionRouteTests(unittest.TestCase):
         cls.previous_environment = {
             key: os.environ.get(key)
             for key in (
-                "ZHUOJIAN_INTEGRATION_SECRET",
+                "ZHUOJIAN_MANIFEST_ACCESS_TOKEN",
+                "ZHUOJIAN_SSO_EXCHANGE_TOKEN",
+                "ZHUOJIAN_ACTION_SIGNING_SECRET",
+                "ZHUOJIAN_EVENT_SIGNING_SECRET",
                 "SESSION_SECRET",
                 "ZHUOJIAN_ORGANIZATION_ID",
                 "ZHUOJIAN_PUBLIC_ORIGIN",
+                "ZHUOJIAN_SAAS_ORIGIN",
                 "DATABASE_PATH",
                 "FILE_STORAGE_DRIVER",
                 "FILE_STORAGE_ROOT",
             )
         }
-        cls.integration_secret = "integration-secret-used-only-by-action-tests"
-        cls.organization_id = "test-organization"
+        cls.manifest_token = "zjmf_manifest-token-used-only-by-action-tests-123456789"
+        cls.sso_token = "zjss_exchange-token-used-only-by-action-tests-123456789"
+        cls.action_secret = "zjac_action-secret-used-only-by-action-tests-123456789"
+        cls.event_secret = "zjev_event-secret-used-only-by-action-tests-123456789"
+        cls.organization_id = "11111111-1111-4111-8111-111111111111"
         cls.department_id = "ops"
         cls.role_ids = ["ops-owner"]
         cls.effective_data_scope = {
@@ -57,10 +64,14 @@ class ActionRouteTests(unittest.TestCase):
             "department_ids": [cls.department_id],
         }
         os.environ.update({
-            "ZHUOJIAN_INTEGRATION_SECRET": cls.integration_secret,
+            "ZHUOJIAN_MANIFEST_ACCESS_TOKEN": cls.manifest_token,
+            "ZHUOJIAN_SSO_EXCHANGE_TOKEN": cls.sso_token,
+            "ZHUOJIAN_ACTION_SIGNING_SECRET": cls.action_secret,
+            "ZHUOJIAN_EVENT_SIGNING_SECRET": cls.event_secret,
             "SESSION_SECRET": "session-secret-used-only-by-action-tests-123",
             "ZHUOJIAN_ORGANIZATION_ID": cls.organization_id,
             "ZHUOJIAN_PUBLIC_ORIGIN": "https://testserver",
+            "ZHUOJIAN_SAAS_ORIGIN": "https://saas.test.example.com",
             "DATABASE_PATH": str(temporary_root / "subsystem.db"),
             "FILE_STORAGE_DRIVER": "local",
             "FILE_STORAGE_ROOT": str(temporary_root / "files"),
@@ -84,10 +95,12 @@ class ActionRouteTests(unittest.TestCase):
             for action in module["actions"]
         }
         action_keys = [action["actionKey"] for action in module["actions"]]
-        now = int(time.time())
-        ticket = jwt.encode({
+        now = datetime.now(timezone.utc)
+        launch_nonce = "launch_nonce_used_by_action_tests"
+        code = "zjsc_" + "a" * 48
+        claims = {
             "iss": "zhuojian-saas",
-            "typ": "zhuojian-sso",
+            "typ": "zhuojian-sso-code",
             "aud": cls.application.APP_SLUG,
             "sub": "page-action-test-user",
             "organizationId": cls.organization_id,
@@ -105,22 +118,81 @@ class ActionRouteTests(unittest.TestCase):
                         "view", "ai_query", "ai_create", "ai_update",
                         "ai_delete", "ai_approve", "export",
                     ],
+                    "dataScopes": {
+                        permission: cls.effective_data_scope
+                        for permission in [
+                            "view", "ai_query", "ai_create", "ai_update",
+                            "ai_delete", "ai_approve", "export",
+                        ]
+                    },
+                    "actionDataScopes": {
+                        action_key: cls.effective_data_scope for action_key in action_keys
+                    },
                 }
             },
             "jti": uuid4().hex,
-            "iat": now,
-            "exp": now + 120,
-        }, cls.integration_secret, algorithm="HS256")
-        response = cls.client.get(
-            "/api/integration/sso",
-            params={"ticket": ticket, "redirect": page["routePattern"]},
-            follow_redirects=False,
+            "launchNonce": launch_nonce,
+            "sessionBindingHash": "a" * 64,
+            "authEpoch": 0,
+            "permissions": [
+                "view", "ai_query", "ai_create", "ai_update",
+                "ai_delete", "ai_approve", "export",
+            ],
+            "iat": now.isoformat(),
+            "exp": (now + timedelta(seconds=120)).isoformat(),
+        }
+        exchange_response = mock.Mock(
+            status_code=200,
+            content=b"{}",
+            headers={"content-type": "application/json"},
         )
+        cls.sso_claims = claims
+        cls.sso_exchange_payload = {
+            "application_id": "22222222-2222-4222-8222-222222222222",
+            "application_slug": cls.application.APP_SLUG,
+            "organization_id": cls.organization_id,
+            "module_key": cls.module_key,
+            "redirect": page["routePattern"],
+            "launch_nonce": launch_nonce,
+            "claims": claims,
+        }
+        exchange_response.json.return_value = cls.sso_exchange_payload
+        with mock.patch.object(cls.application.httpx, "post", return_value=exchange_response):
+            response = cls.client.get(
+                "/api/integration/sso",
+                params={
+                    "code": code,
+                    "redirect": page["routePattern"],
+                    "launch_nonce": launch_nonce,
+                },
+                headers={
+                    "Referer": cls.application.SAAS_ORIGIN + "/terminal",
+                    "Sec-Fetch-Dest": "iframe",
+                },
+                follow_redirects=False,
+            )
         if response.status_code != 302:
             raise AssertionError(response.text)
+        if response.headers.get("location") != page["routePattern"]:
+            raise AssertionError("SSO code was not removed from the redirect URL")
+        cls.sso_set_cookie = response.headers.get("set-cookie", "")
+        cls.live_session_patcher = mock.patch.object(
+            cls.application,
+            "validate_live_session",
+            side_effect=lambda session, module_key, page_key, action_key=None: (
+                cls.application.action_scoped_actor(session, page_key, action_key)
+                if action_key
+                else {
+                    **session,
+                    "effectiveDataScope": session["pageAccess"][page_key]["dataScopes"]["view"],
+                }
+            ),
+        )
+        cls.live_session_patcher.start()
 
     @classmethod
     def tearDownClass(cls):
+        cls.live_session_patcher.stop()
         cls.client_context.__exit__(None, None, None)
         sys.modules.pop("app", None)
         if sys.path and sys.path[0] == str(PROJECT_ROOT):
@@ -186,7 +258,7 @@ class ActionRouteTests(unittest.TestCase):
                 "confirmedAt": (confirmed_at or datetime.now(timezone.utc)).isoformat(),
                 "paramsHash": self.application.canonical_hash(params),
             })
-        return self.jwt.encode(claims, self.integration_secret, algorithm="HS256")
+        return self.jwt.encode(claims, self.action_secret, algorithm="HS256")
 
     def event_body(self, *, event_type: str = "inventory.changed.v1") -> dict:
         return {
@@ -220,7 +292,7 @@ class ActionRouteTests(unittest.TestCase):
             "exp": now + 60,
             **overrides,
         }
-        return self.jwt.encode(claims, self.integration_secret, algorithm="HS256")
+        return self.jwt.encode(claims, self.event_secret, algorithm="HS256")
 
     def post_event(self, body: dict, *, token: str | None = None):
         return self.client.post(
@@ -244,6 +316,108 @@ class ActionRouteTests(unittest.TestCase):
             headers={"Authorization": f"Bearer {token}"},
             json=body,
         )
+
+    def test_manifest_and_event_polling_accept_only_the_manifest_token(self):
+        for path in ("/api/integration/manifest", "/api/integration/events"):
+            accepted = self.client.get(
+                path,
+                headers={"Authorization": f"Bearer {self.manifest_token}"},
+            )
+            rejected = self.client.get(
+                path,
+                headers={"Authorization": f"Bearer {self.action_secret}"},
+            )
+            self.assertEqual(accepted.status_code, 200, accepted.text)
+            self.assertEqual(rejected.status_code, 401, rejected.text)
+
+    def test_sso_exchange_uses_fixed_url_and_dedicated_bearer(self):
+        payload = json.loads(json.dumps(self.sso_exchange_payload))
+        nonce = "different_launch_nonce_for_binding_test"
+        payload["launch_nonce"] = "attacker_nonce_that_must_not_be_accepted"
+        response_from_saas = mock.Mock(
+            status_code=200,
+            content=b"{}",
+            headers={"content-type": "application/json"},
+        )
+        response_from_saas.json.return_value = payload
+
+        with mock.patch.object(
+            self.application.httpx, "post", return_value=response_from_saas
+        ) as post:
+            response = self.client.get(
+                "/api/integration/sso",
+                params={
+                    "code": "zjsc_" + "c" * 48,
+                    "redirect": payload["redirect"],
+                    "launch_nonce": nonce,
+                },
+                headers={
+                    "Referer": self.application.SAAS_ORIGIN + "/terminal",
+                    "Sec-Fetch-Dest": "iframe",
+                },
+                follow_redirects=False,
+            )
+
+        self.assertEqual(response.status_code, 403, response.text)
+        self.assertEqual(post.call_args.args[0], self.application.SSO_EXCHANGE_URL)
+        self.assertEqual(
+            post.call_args.kwargs["headers"]["Authorization"],
+            f"Bearer {self.sso_token}",
+        )
+        self.assertEqual(post.call_args.kwargs["json"]["launch_nonce"], nonce)
+        self.assertFalse(post.call_args.kwargs["follow_redirects"])
+        self.assertFalse(post.call_args.kwargs["trust_env"])
+
+    def test_sso_uses_small_partitioned_server_side_cookie_and_requires_saas_navigation(self):
+        self.assertIn("SameSite=None", self.sso_set_cookie)
+        self.assertIn("Partitioned", self.sso_set_cookie)
+        self.assertIn("HttpOnly", self.sso_set_cookie)
+        self.assertLess(len(self.sso_set_cookie), 1024)
+        with closing(sqlite3.connect(os.environ["DATABASE_PATH"])) as connection:
+            stored = connection.execute("SELECT data FROM browser_sessions").fetchone()
+        self.assertIsNotNone(stored)
+        self.assertIn("pageAccess", json.loads(stored[0]))
+
+        response = self.client.get(
+            "/api/integration/sso",
+            params={
+                "code": "zjsc_" + "n" * 48,
+                "redirect": self.sso_exchange_payload["redirect"],
+                "launch_nonce": self.sso_exchange_payload["launch_nonce"],
+            },
+            follow_redirects=False,
+        )
+        self.assertEqual(response.status_code, 403, response.text)
+
+    def test_sso_exchange_rejects_claims_over_120_seconds(self):
+        payload = json.loads(json.dumps(self.sso_exchange_payload))
+        now = datetime.now(timezone.utc)
+        payload["claims"]["iat"] = now.isoformat()
+        payload["claims"]["exp"] = (now + timedelta(seconds=121)).isoformat()
+        response_from_saas = mock.Mock(
+            status_code=200,
+            content=b"{}",
+            headers={"content-type": "application/json"},
+        )
+        response_from_saas.json.return_value = payload
+        with mock.patch.object(
+            self.application.httpx, "post", return_value=response_from_saas
+        ):
+            response = self.client.get(
+                "/api/integration/sso",
+                params={
+                    "code": "zjsc_" + "d" * 48,
+                    "redirect": payload["redirect"],
+                    "launch_nonce": payload["launch_nonce"],
+                },
+                headers={
+                    "Referer": self.application.SAAS_ORIGIN + "/terminal",
+                    "Sec-Fetch-Dest": "iframe",
+                },
+                follow_redirects=False,
+            )
+
+        self.assertEqual(response.status_code, 401, response.text)
 
     def test_request_id_schema_and_payload_binding_are_enforced(self):
         bad_body = self.action_body(
@@ -334,6 +508,27 @@ class ActionRouteTests(unittest.TestCase):
         self.assertEqual(row[2], "integration-action-test-user")
         self.assertEqual(row[3], 2)
 
+    def test_page_action_uses_its_own_scope_not_the_broader_view_scope(self):
+        session = json.loads(json.dumps(self.sso_claims))
+        session["effectiveDataScope"] = {
+            "unrestricted": True,
+            "include_self": False,
+            "own_only": False,
+            "department_ids": [],
+        }
+        delete_key = self.actions["delete"]["actionKey"]
+        session["pageAccess"][self.page_key]["actionDataScopes"][delete_key] = {
+            "unrestricted": False,
+            "include_self": True,
+            "own_only": True,
+            "department_ids": [],
+        }
+
+        actor = self.application.action_scoped_actor(session, self.page_key, delete_key)
+        with self.assertRaises(self.application.HTTPException) as raised:
+            self.application.require_record_scope(actor, "finance", "another-user")
+        self.assertEqual(raised.exception.status_code, 403)
+
     def test_sibling_origin_cannot_use_the_ui_session_with_simple_content_type(self):
         body = self.action_body("delete", uuid4().hex, {"id": "victim"}, expected_version=1)
         response = self.client.post(
@@ -415,10 +610,9 @@ class ActionRouteTests(unittest.TestCase):
 
     def test_jwt_requires_exp_and_enforces_contract_lifetime(self):
         now = int(time.time())
-        for token_type, maximum_lifetime in (
-            ("zhuojian-sso", 120),
-            ("zhuojian-action", 60),
-            ("zhuojian-event", 60),
+        for token_type, maximum_lifetime, signing_secret in (
+            ("zhuojian-action", 60, self.action_secret),
+            ("zhuojian-event", 60, self.event_secret),
         ):
             base_claims = {
                 "iss": "zhuojian-saas",
@@ -429,7 +623,7 @@ class ActionRouteTests(unittest.TestCase):
             }
             missing_exp = self.jwt.encode(
                 base_claims,
-                self.integration_secret,
+                signing_secret,
                 algorithm="HS256",
             )
             with self.assertRaises(Exception) as missing_context:
@@ -438,7 +632,7 @@ class ActionRouteTests(unittest.TestCase):
 
             excessive = self.jwt.encode(
                 {**base_claims, "exp": now + maximum_lifetime + 1},
-                self.integration_secret,
+                signing_secret,
                 algorithm="HS256",
             )
             with self.assertRaises(Exception) as excessive_context:
@@ -447,7 +641,7 @@ class ActionRouteTests(unittest.TestCase):
 
             valid = self.jwt.encode(
                 {**base_claims, "exp": now + maximum_lifetime},
-                self.integration_secret,
+                signing_secret,
                 algorithm="HS256",
             )
             self.assertEqual(
@@ -577,6 +771,42 @@ class ActionRouteTests(unittest.TestCase):
         with closing(sqlite3.connect(os.environ["DATABASE_PATH"])) as connection:
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM records WHERE id=?", (record_id,)).fetchone()[0], 0)
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM consumed_confirmations WHERE request_id=?", (request_id,)).fetchone()[0], 1)
+
+    def test_create_and_update_cannot_bypass_dedicated_status_action(self):
+        record_id = uuid4().hex
+        forged_create = self.post_integration(
+            "create",
+            self.action_body(
+                "create",
+                uuid4().hex,
+                {"id": record_id, "data": {"status": "approved"}},
+            ),
+        )
+        self.assertEqual(forged_create.status_code, 422, forged_create.text)
+
+        created = self.post_integration(
+            "create",
+            self.action_body("create", uuid4().hex, {"id": record_id, "data": {}}),
+        )
+        self.assertEqual(created.status_code, 200, created.text)
+        self.assertEqual(created.json()["status"], "draft")
+
+        forged_update = self.post_integration(
+            "update",
+            self.action_body(
+                "update",
+                uuid4().hex,
+                {"id": record_id, "changes": {"status": "approved"}},
+                expected_version=1,
+            ),
+        )
+        self.assertEqual(forged_update.status_code, 422, forged_update.text)
+        with closing(sqlite3.connect(os.environ["DATABASE_PATH"])) as connection:
+            status, version = connection.execute(
+                "SELECT status, version FROM records WHERE id=?",
+                (record_id,),
+            ).fetchone()
+        self.assertEqual((status, version), ("draft", 1))
 
     def test_page_high_risk_action_requires_issued_matching_confirmation(self):
         record_id = uuid4().hex

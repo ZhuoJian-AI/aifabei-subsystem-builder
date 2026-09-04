@@ -195,14 +195,14 @@ def main() -> int:
     config = {
         "protocol": "zhuojian-subsystem",
         "version": 2,
-        "contractRevision": "2.4",
+        "contractRevision": "2.5",
         "enterprise": {"key": company_slug, "name": args.company_name.strip()},
         "applicationSlug": application_slug,
         "applicationName": args.application_name.strip(),
         "bridgeVersion": 1,
         "eventsUrl": "/api/integration/events",
         "eventDeliveriesUrl": "/api/integration/event-deliveries",
-        "auth": {"ssoPath": "/api/integration/sso", "algorithm": "HS256"},
+        "auth": {"ssoPath": "/api/integration/sso", "mode": "authorization_code"},
         "modules": [{
             "moduleKey": module_key,
             "name": args.module_name.strip(),

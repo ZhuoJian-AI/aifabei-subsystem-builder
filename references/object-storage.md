@@ -30,7 +30,7 @@ stat(storageKey) -> size, checksum, mime
 ```text
 fileId
 storageKey
-storageBackend        # local 或 oss，迁移期间允许并存
+storageBackend        # local 或 oss-gateway，迁移期间允许并存
 originalName
 mimeType
 sizeBytes
@@ -147,7 +147,7 @@ FILE_STORAGE_RECOVERY_IO_TIMEOUT_SECONDS=5
    ```
 
    该命令会对真实对象验证匿名读取拒绝，验证 RAM 对 `apps/*` 外的列举、读取、写入和删除全部拒绝，再执行 PUT、GET、DELETE、两个临时应用同名对象隔离和临时身份撤销。越界写探针必须使用不会留下对象的无效校验值；探针失败时不改 Runtime，成功后才原子写入 `verified=true` 并把 `oss-gateway` 设为尚未初始化系统的默认模式。
-7. 新系统不再需要管理员。业务 AI 在本地 Git 首次干净提交后执行 `zhuojian-runtime ensure-app <applicationSlug>`；Runtime 幂等生成项目身份并写入网关专用的 `/etc/zhuojian/storage-apps/<applicationSlug>.storage.env`，部署时自动注入，并把 `oss-gateway` 冻结进该系统的 release。该目录与普通应用 Secret 目录分离，网关看不到 SaaS 接入密钥或 Session Secret。Host 先升级、网关尚未升级的短暂过渡期，Runtime 也能接受旧网关写入的 `/etc/zhuojian/apps/<applicationSlug>.storage.env`，但只允许新旧两个固定位置中恰好存在一个且与 release 记录一致；网关升级后由迁移器移动 Secret 并同步 release。双文件或任意路径一律拒绝。命令不输出令牌，重复执行复用原身份与后端；被管理员暂停或撤销的身份不会被自动复活。
+7. 新系统不再需要管理员。业务 AI 在本地 Git 首次干净提交后执行 `zhuojian-runtime ensure-app <applicationSlug>`；Runtime 幂等生成项目身份并写入网关专用的 `/etc/zhuojian/storage-apps/<applicationSlug>.storage.env`，部署时自动注入，并把 `oss-gateway` 冻结进该系统的 release。该目录与普通应用 Secret 目录分离，网关看不到 SaaS 四类项目凭证或 Session Secret。Host 先升级、网关尚未升级的短暂过渡期，Runtime 也能接受旧网关写入的 `/etc/zhuojian/apps/<applicationSlug>.storage.env`，但只允许新旧两个固定位置中恰好存在一个且与 release 记录一致；网关升级后由迁移器移动 Secret 并同步 release。双文件或任意路径一律拒绝。命令不输出令牌，重复执行复用原身份与后端；被管理员暂停或撤销的身份不会被自动复活。
 8. 网关上传会使用 ECS 临时空间做有界缓冲，而不是宣称完全不落盘。默认单对象上限 `512 MiB`、网关自身同时缓冲最多 `2` 个对象，并保留至少 `5 GiB` 空闲空间；原生模块还通过全 ECS 共享锁把正常上传占盘阶段串行化，形成第二道保护。Nginx 请求体上限固定为 `512m`。应用等待网关和 Nginx 等待应用的默认响应窗口统一为 `900` 秒；`uploading` 恢复宽限默认 `1800` 秒，避免把超时后仍可能完成的 OSS 请求误删成无主对象。修改时必须同步调整这些层并做慢速、断连和延迟提交验收。需要更大文件时，管理员必须先评估磁盘、带宽与中断清理，再实现并验收 OSS 分片直传，不能简单调大上限。
 
 ## 项目身份轮换

@@ -5,7 +5,7 @@
 ## 输入与边界
 
 - 允许输入：服务器公网地址与 root 账号密码，或已登录的云控制台会话；后续平台登记再需要 Alphabet 组织 UUID、域名后缀和灼见管理员会话。收到服务器地址与 root 凭证后，AI 按 [ECS 首次接入](ecs-first-access.md) 自动登录，并按 [SSH、VPN 与代理访问](ssh-access.md) 验证业务电脑实际使用的 VPN/代理路径。标准 SSH `22` 已通过时不必改造 Nginx 或安装 `sslh`；只有 `22` 受限且确有需要时才配置 SSH/HTTPS `443` 复用。管理员可在现在或以后一次性绑定 Alphabet 企业 OSS；业务 AI 永远不需要阿里云账号、Bucket、RAM、AccessKey 或逐项目令牌。
-- 密码、SSH 密钥、模块接入密钥和 ECS 登记凭证不得进入本地 Git、环境档案、日志或回复。
+- 密码、SSH 密钥、模块项目凭证和 ECS 登记凭证不得进入本地 Git、环境档案、日志或回复。
 - 默认保留服务器全部既有容器、虚拟主机、数据库和数据目录。新资源使用 `zhuojian-<enterprise>-<application>` 标识。
 - 管理员 AI 只建立运行底座、域名规则和登记入口，不替业务 AI 编写业务流程。
 
@@ -102,7 +102,7 @@
   },
   "secretRefs": [
     "/etc/zhuojian/runtime-registration.key",
-    "ZHUOJIAN_INTEGRATION_SECRET",
+    "/etc/zhuojian/apps/{applicationSlug}.env",
     "SESSION_SECRET"
   ],
   "verifiedAt": "<RFC3339>"
@@ -160,7 +160,7 @@ PATCH /api/v1/ecs-publisher/organizations/{organizationId}/runtimes/{runtimeId}
 POST  /api/v1/ecs-publisher/organizations/{organizationId}/runtimes/{runtimeId}/rotate-credential
 ```
 
-轮换后旧凭证立即失效。新凭证仍只显示一次，必须先原子写入临时 `0600` 文件，再替换正式文件；轮换不应改变模块域名、本地 Git、数据目录或接入密钥。
+轮换后旧的 ECS 登记凭证立即失效。新值只显示一次，必须先原子写入临时 `0600` 文件，再替换正式文件；这项操作不改变模块域名、本地 Git、数据目录或各系统项目凭证。
 
 ## 资源预检
 

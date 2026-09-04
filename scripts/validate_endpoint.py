@@ -7,17 +7,20 @@ import argparse
 import json
 import os
 import re
+from pathlib import Path
 from urllib.error import HTTPError
 from urllib.parse import urlencode, urljoin, urlsplit
-from urllib.request import HTTPRedirectHandler, Request, build_opener
+from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
+
+from publish_subsystem import load_app_credentials
 
 
 class RejectRedirects(HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
         raise HTTPError(req.full_url, code, "重定向不被接入协议允许", headers, fp)
 
 
-OPENER = build_opener(RejectRedirects)
+OPENER = build_opener(ProxyHandler({}), RejectRedirects())
 STABLE_KEY_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 VALIDATION_WARNINGS: list[str] = []
 
@@ -29,7 +32,10 @@ def get_json(url: str, token: str) -> dict:
     with OPENER.open(Request(url, headers=headers), timeout=15) as response:
         if not 200 <= response.status < 300:
             raise SystemExit(f"{url} 返回 HTTP {response.status}")
-        return json.load(response)
+        payload = response.read(4 * 1024 * 1024 + 1)
+        if len(payload) > 4 * 1024 * 1024:
+            raise SystemExit(f"{url} 响应超过 4 MiB。")
+        return json.loads(payload)
 
 
 def same_origin(left: str, right: str) -> bool:
@@ -143,7 +149,8 @@ def validate_action_contract(action: dict, label: str) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description="验证 Alphabet 模块系统 v2 接入协议")
     parser.add_argument("--base-url", required=True)
-    parser.add_argument("--token-env", default="ZHUOJIAN_INTEGRATION_SECRET", help="保存唯一接入密钥的环境变量名")
+    parser.add_argument("--token-env", default="ZHUOJIAN_MANIFEST_ACCESS_TOKEN", help="Manifest 凭证环境变量名")
+    parser.add_argument("--app-env-file", type=Path, help="Runtime 管理的应用凭证文件；默认按域名推断")
     parser.add_argument("--expect-min-modules", type=int, default=1, help="至少应发现多少个子模块")
     parser.add_argument("--expect-module-key", action="append", default=[], help="必须存在的 moduleKey，可重复")
     args = parser.parse_args()
@@ -151,6 +158,11 @@ def main() -> int:
         parser.error("--expect-min-modules 必须大于等于 1")
     base = args.base_url.rstrip("/") + "/"
     token = os.environ.get(args.token_env, "")
+    if not token:
+        hostname = urlsplit(base).hostname or ""
+        inferred_slug = hostname.split(".", 1)[0]
+        env_file = args.app_env_file or Path("/etc/zhuojian/apps") / f"{inferred_slug}.env"
+        token = load_app_credentials(env_file)["manifest_access_token"]
 
     health = get_json(urljoin(base, "health"), token)
     if health.get("status") != "ok":
@@ -166,8 +178,8 @@ def main() -> int:
         raise SystemExit("清单缺少字段：" + "、".join(missing))
     if manifest.get("protocol") != "zhuojian-subsystem" or manifest.get("version") != 2:
         raise SystemExit("清单必须使用 zhuojian-subsystem version 2。")
-    if manifest.get("contractRevision") != "2.4":
-        raise SystemExit("冷启动验收要求当前 SaaS 已支持的 contractRevision=2.4。")
+    if manifest.get("contractRevision") != "2.5":
+        raise SystemExit("冷启动验收要求 contractRevision=2.5。")
     for module in manifest.get("modules") or []:
         if not module.get("accessRoles"):
             raise SystemExit(f"子模块 {module.get('moduleKey')} 缺少 accessRoles 权限组合建议。")
@@ -178,9 +190,10 @@ def main() -> int:
     if (
         not isinstance(auth, dict)
         or auth.get("ssoPath") != "/api/integration/sso"
-        or auth.get("algorithm") != "HS256"
+        or auth.get("mode") != "authorization_code"
+        or "algorithm" in auth
     ):
-        raise SystemExit("清单 auth 必须声明固定 ssoPath 和 HS256。")
+        raise SystemExit("清单 auth 必须声明固定 ssoPath 和 authorization_code，且不得声明 algorithm。")
 
     events_url = urljoin(manifest_url, str(manifest["eventsUrl"]))
     if not same_origin(base, events_url):
