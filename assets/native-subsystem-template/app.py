@@ -67,6 +67,7 @@ def init_db() -> None:
         connection.executescript("""
         CREATE TABLE IF NOT EXISTS records (
           id TEXT PRIMARY KEY, module_key TEXT NOT NULL, data TEXT NOT NULL,
+          department_id TEXT, created_by TEXT,
           status TEXT NOT NULL DEFAULT 'draft', version INTEGER NOT NULL DEFAULT 1,
           created_at TEXT NOT NULL, updated_at TEXT NOT NULL
         );
@@ -85,6 +86,21 @@ def init_db() -> None:
           result TEXT NOT NULL, received_at TEXT NOT NULL
         );
         """)
+        record_columns = {
+            str(row["name"]) for row in connection.execute("PRAGMA table_info(records)").fetchall()
+        }
+        missing_scope_columns = {"department_id", "created_by"} - record_columns
+        if missing_scope_columns:
+            existing_records = int(connection.execute("SELECT COUNT(*) FROM records").fetchone()[0])
+            if existing_records:
+                raise RuntimeError(
+                    "Existing records need an explicit department_id/created_by backfill before enabling "
+                    "platform role data scopes"
+                )
+            if "department_id" in missing_scope_columns:
+                connection.execute("ALTER TABLE records ADD COLUMN department_id TEXT")
+            if "created_by" in missing_scope_columns:
+                connection.execute("ALTER TABLE records ADD COLUMN created_by TEXT")
 
 
 @app.on_event("startup")
@@ -152,6 +168,48 @@ def required_permission(operation: str) -> str:
     }[operation]
 
 
+def normalized_data_scope(actor: dict) -> tuple[bool, bool, bool, set[str]]:
+    role_ids = actor.get("roleIds")
+    scope = actor.get("effectiveDataScope")
+    if not isinstance(role_ids, list) or not isinstance(scope, dict):
+        raise HTTPException(403, "Platform role data scope is required")
+    department_ids = scope.get("department_ids")
+    if not isinstance(department_ids, (list, tuple)):
+        raise HTTPException(403, "Platform department data scope is invalid")
+    return (
+        scope.get("unrestricted") is True,
+        scope.get("include_self") is True,
+        scope.get("own_only") is True,
+        {str(value) for value in department_ids if value},
+    )
+
+
+def scoped_records_clause(actor: dict) -> tuple[str, list[str]]:
+    unrestricted, include_self, own_only, department_ids = normalized_data_scope(actor)
+    if unrestricted:
+        return "", []
+    clauses: list[str] = []
+    values: list[str] = []
+    if department_ids:
+        clauses.append(f"department_id IN ({','.join('?' for _ in department_ids)})")
+        values.extend(sorted(department_ids))
+    if include_self or own_only:
+        clauses.append("created_by=?")
+        values.append(str(actor.get("sub") or ""))
+    if not clauses:
+        raise HTTPException(403, "Platform role grants no business data scope")
+    return " AND (" + " OR ".join(clauses) + ")", values
+
+
+def require_record_scope(actor: dict, department_id: str | None, created_by: str | None) -> None:
+    unrestricted, include_self, own_only, department_ids = normalized_data_scope(actor)
+    if unrestricted or (department_id and department_id in department_ids):
+        return
+    if (include_self or own_only) and created_by == str(actor.get("sub") or ""):
+        return
+    raise HTTPException(403, "Business record is outside the platform role data scope")
+
+
 def emit_event(connection: sqlite3.Connection, module_key: str, event_type: str, entity_id: str, payload: dict) -> None:
     # The SaaS cursor survives container/database replacement.  A local
     # AUTOINCREMENT that restarts at 1 can therefore hide new events behind an
@@ -165,38 +223,68 @@ def emit_event(connection: sqlite3.Connection, module_key: str, event_type: str,
     )
 
 
-def execute_business_action(action: dict, params: dict, expected_version: str | int | None) -> dict:
+def execute_business_action(
+    action: dict,
+    params: dict,
+    expected_version: str | int | None,
+    actor: dict,
+) -> dict:
     operation = action["operation"]
     module_key = action["moduleKey"]
     now = datetime.now(timezone.utc).isoformat()
     with db() as connection:
         if operation == "query":
+            scope_sql, scope_values = scoped_records_clause(actor)
             rows = connection.execute(
-                "SELECT id,data,status,version,created_at,updated_at FROM records WHERE module_key=? ORDER BY updated_at DESC LIMIT 200",
-                (module_key,),
+                "SELECT id,data,status,version,created_at,updated_at FROM records "
+                f"WHERE module_key=?{scope_sql} ORDER BY updated_at DESC LIMIT 200",
+                [module_key, *scope_values],
             ).fetchall()
             return {"items": [{**json.loads(row["data"]), "id": row["id"], "status": row["status"], "version": row["version"]} for row in rows]}
         if operation == "create":
+            raw_data = params.get("data")
+            if not isinstance(raw_data, dict):
+                raise HTTPException(422, "Create params.data must be an object")
             record_id = str(params.get("id") or uuid4().hex)
-            data = {key: value for key, value in params.items() if key not in {"id", "status", "version"}}
+            data = dict(raw_data)
+            department_id = str(data.get("departmentId") or actor.get("departmentId") or "")
+            if not department_id:
+                raise HTTPException(422, "A business departmentId is required")
+            data["departmentId"] = department_id
+            created_by = str(actor.get("sub") or "")
+            require_record_scope(actor, department_id, created_by)
+            status = str(data.pop("status", "draft"))
             connection.execute(
-                "INSERT INTO records(id,module_key,data,status,version,created_at,updated_at) VALUES(?,?,?,?,1,?,?)",
-                (record_id, module_key, json.dumps(data, ensure_ascii=False), str(params.get("status") or "draft"), now, now),
+                "INSERT INTO records(id,module_key,data,department_id,created_by,status,version,created_at,updated_at) "
+                "VALUES(?,?,?,?,?,?,1,?,?)",
+                (record_id, module_key, json.dumps(data, ensure_ascii=False), department_id, created_by, status, now, now),
             )
             emit_event(connection, module_key, f"{module_key}.created.v1", record_id, {"version": 1})
-            return {"id": record_id, "version": 1, "status": str(params.get("status") or "draft")}
+            return {"id": record_id, "version": 1, "status": status}
         record_id = str(params.get("id") or "")
         row = connection.execute("SELECT * FROM records WHERE id=? AND module_key=?", (record_id, module_key)).fetchone()
         if row is None:
             raise HTTPException(404, "Business record not found")
-        if expected_version is None or str(row["version"]) != str(expected_version):
+        require_record_scope(actor, row["department_id"], row["created_by"])
+        if operation in {"update", "delete"} and (
+            expected_version is None or str(row["version"]) != str(expected_version)
+        ):
             raise HTTPException(409, "Business record version conflict")
         if operation == "update":
+            changes = params.get("changes")
+            if not isinstance(changes, dict):
+                raise HTTPException(422, "Update params.changes must be an object")
             data = json.loads(row["data"])
-            data.update({key: value for key, value in params.items() if key not in {"id", "status", "version"}})
+            data.update(changes)
+            department_id = str(data.get("departmentId") or row["department_id"] or "")
+            require_record_scope(actor, department_id, row["created_by"])
+            data["departmentId"] = department_id
             version = row["version"] + 1
-            status = str(params.get("status") or row["status"])
-            connection.execute("UPDATE records SET data=?,status=?,version=?,updated_at=? WHERE id=?", (json.dumps(data, ensure_ascii=False), status, version, now, record_id))
+            status = str(data.pop("status", row["status"]))
+            connection.execute(
+                "UPDATE records SET data=?,department_id=?,status=?,version=?,updated_at=? WHERE id=?",
+                (json.dumps(data, ensure_ascii=False), department_id, status, version, now, record_id),
+            )
             emit_event(connection, module_key, f"{module_key}.updated.v1", record_id, {"version": version, "status": status})
             return {"id": record_id, "version": version, "status": status}
         if operation == "approve":
@@ -281,7 +369,7 @@ async def invoke_action(action_key: str, request: Request, authorization: str | 
             if stored["action_key"] != action_key:
                 raise HTTPException(409, "requestId is bound to another action")
             return json.loads(stored["result"])
-    result = execute_business_action(action, params, body.get("expectedVersion"))
+    result = execute_business_action(action, params, body.get("expectedVersion"), claims)
     with db() as connection:
         connection.execute("INSERT INTO request_results VALUES(?,?,?,?)", (request_id, action_key, json.dumps(result, ensure_ascii=False), datetime.now(timezone.utc).isoformat()))
     return result
@@ -319,7 +407,7 @@ async def invoke_page_action(action_key: str, request: Request):
     if action.get("requiresConfirmation") and body.get("confirmed") is not True:
         raise HTTPException(409, "Explicit page confirmation required")
     params = body.get("params") if isinstance(body.get("params"), dict) else {}
-    return execute_business_action(action, params, body.get("expectedVersion"))
+    return execute_business_action(action, params, body.get("expectedVersion"), session)
 
 
 @app.get("/api/integration/sso")
@@ -336,6 +424,8 @@ def sso(request: Request, ticket: str, redirect: str = "/"):
         or any(not isinstance(key, str) for key in page_keys)
         or not isinstance(action_keys, list) or any(not isinstance(key, str) for key in action_keys)
         or not isinstance(page_access, dict)
+        or not isinstance(claims.get("roleIds"), list)
+        or not isinstance(claims.get("effectiveDataScope"), dict)
     ):
         raise HTTPException(403, "SSO page/action scope is required")
     if set(page_keys) != set(page_access):
@@ -356,6 +446,10 @@ def sso(request: Request, ticket: str, redirect: str = "/"):
         connection.execute("INSERT INTO consumed_tickets VALUES(?,?)", (jti, int(claims["exp"])))
     request.session.update({
         "sub": claims["sub"], "organizationId": claims["organizationId"],
+        "departmentId": claims.get("departmentId"),
+        "departmentIds": claims.get("departmentIds") or [],
+        "roleIds": claims.get("roleIds") or [],
+        "effectiveDataScope": claims.get("effectiveDataScope") or {},
         "moduleKey": module_key, "permissions": claims.get("permissions") or [],
         "pageKeys": page_keys, "actionKeys": action_keys, "pageAccess": page_access,
     })

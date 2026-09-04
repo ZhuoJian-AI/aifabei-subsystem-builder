@@ -84,6 +84,11 @@ def main() -> int:
     sso_claims = {
         "iss": "zhuojian-saas", "aud": manifest["applicationSlug"], "typ": "zhuojian-sso",
         "sub": user_id, "organizationId": organization_id, "departmentId": "acceptance-dept",
+        "departmentIds": ["acceptance-dept"], "roleIds": ["acceptance-role"],
+        "effectiveDataScope": {
+            "unrestricted": False, "include_self": False, "own_only": False,
+            "department_ids": ["acceptance-dept"],
+        },
         "teamId": None, "moduleKey": args.module_key, "permissions": ["view", "ai_query"],
         "pageKeys": [args.page_key], "actionKeys": [args.query_action],
         "pageAccess": {
@@ -104,6 +109,11 @@ def main() -> int:
     action_claims = {
         "iss": "zhuojian-saas", "aud": manifest["applicationSlug"], "typ": "zhuojian-action",
         "sub": user_id, "organizationId": organization_id, "departmentId": "acceptance-dept",
+        "departmentIds": ["acceptance-dept"], "roleIds": ["acceptance-role"],
+        "effectiveDataScope": {
+            "unrestricted": False, "include_self": False, "own_only": False,
+            "department_ids": ["acceptance-dept"],
+        },
         "teamId": None, "moduleKey": args.module_key, "pageKey": args.page_key,
         "actionKey": args.query_action, "operation": "query", "permissions": ["view", "ai_query"],
         "requestId": request_id, "jti": uuid4().hex, "iat": now, "exp": now + 60,

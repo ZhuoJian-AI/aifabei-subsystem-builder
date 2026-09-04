@@ -166,11 +166,11 @@ def main() -> int:
         raise SystemExit("清单缺少字段：" + "、".join(missing))
     if manifest.get("protocol") != "zhuojian-subsystem" or manifest.get("version") != 2:
         raise SystemExit("清单必须使用 zhuojian-subsystem version 2。")
-    if manifest.get("contractRevision") != "2.5":
-        raise SystemExit("冷启动验收要求 contractRevision=2.5；旧版按兼容能力接入。")
+    if manifest.get("contractRevision") != "2.4":
+        raise SystemExit("冷启动验收要求当前 SaaS 已支持的 contractRevision=2.4。")
     for module in manifest.get("modules") or []:
         if not module.get("accessRoles"):
-            raise SystemExit(f"子模块 {module.get('moduleKey')} 缺少 accessRoles 角色建议。")
+            raise SystemExit(f"子模块 {module.get('moduleKey')} 缺少 accessRoles 权限组合建议。")
     enterprise = manifest.get("enterprise")
     if not isinstance(enterprise, dict) or not enterprise.get("key") or not enterprise.get("name"):
         raise SystemExit("清单 enterprise 必须包含稳定 key 和 name。")
@@ -231,8 +231,6 @@ def main() -> int:
         for department_index, department in enumerate(departments):
             if not isinstance(department, dict) or not all(department.get(key) for key in ("key", "name", "role")):
                 raise SystemExit(f"{label}.departments[{department_index}] 必须包含 key/name/role。")
-            if not isinstance(department.get("actionKeys"), list) or not isinstance(department.get("pageKeys"), list):
-                raise SystemExit(f"{label}.departments[{department_index}] 必须声明 actionKeys/pageKeys。")
             key = str(department["key"])
             if not STABLE_KEY_RE.fullmatch(key) or key in local_departments:
                 raise SystemExit(f"{label} 的部门 key 格式无效或重复：{key}")
@@ -289,9 +287,17 @@ def main() -> int:
             if not isinstance(page["contextSchema"], dict):
                 raise SystemExit(f"{page_label}.contextSchema 必须是对象。")
         for department_index, department in enumerate(departments):
-            if any(str(key) not in module_action_keys for key in department["actionKeys"]):
+            department_action_keys = department.get("actionKeys")
+            department_page_keys = department.get("pageKeys")
+            if department_action_keys is not None and (
+                not isinstance(department_action_keys, list)
+                or any(str(key) not in module_action_keys for key in department_action_keys)
+            ):
                 raise SystemExit(f"{label}.departments[{department_index}].actionKeys 引用了本子模块不存在的操作。")
-            if any(str(key) not in module_page_keys for key in department["pageKeys"]):
+            if department_page_keys is not None and (
+                not isinstance(department_page_keys, list)
+                or any(str(key) not in module_page_keys for key in department_page_keys)
+            ):
                 raise SystemExit(f"{label}.departments[{department_index}].pageKeys 引用了本子模块不存在的页面。")
 
     missing_expected = sorted(set(args.expect_module_key) - module_keys)

@@ -1,14 +1,14 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://zhuojianai.com/schemas/subsystem/manifest-v2.schema.json",
-  "title": "ZhuoJian subsystem manifest v2.5",
+  "title": "ZhuoJian subsystem manifest v2.4",
   "type": "object",
   "additionalProperties": true,
-  "required": ["protocol", "version", "enterprise", "applicationSlug", "applicationName", "eventsUrl", "eventDeliveriesUrl", "auth", "modules"],
+  "required": ["protocol", "version", "contractRevision", "enterprise", "applicationSlug", "applicationName", "eventsUrl", "eventDeliveriesUrl", "auth", "modules"],
   "properties": {
     "protocol": {"const": "zhuojian-subsystem"},
     "version": {"const": 2},
-    "contractRevision": {"type": "string", "pattern": "^2\\.[0-9]+$"},
+    "contractRevision": {"const": "2.4"},
     "enterprise": {
       "type": "object",
       "additionalProperties": false,
@@ -99,7 +99,7 @@
         "actions": {"type": "array", "items": {"$ref": "#/$defs/action"}},
         "events": {"$ref": "#/$defs/events"}
       },
-      "allOf": [{"$comment": "Semantic validator enforces one owner department and validates role/page/action references. Departments express responsibility; accessRoles express authorization suggestions."}]
+      "allOf": [{"$comment": "Semantic validator enforces one owner department and validates role/page/action references. Departments express responsibility only; accessRoles are permission-bundle suggestions for existing SaaS roles, not subsystem roles or data scopes."}]
     }
   }
 }

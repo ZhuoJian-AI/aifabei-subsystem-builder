@@ -94,8 +94,8 @@ def main() -> int:
             "id": {"type": "string", "description": f"需要审批的{args.module_name}记录标识"},
             "comment": {"type": "string", "description": "审批意见，没有意见时可以省略"},
         }},
-        "export": {"type": "object", "properties": {
-            "filters": {"type": "object", "description": f"限定{args.module_name}导出范围的业务条件"},
+        "export": {"type": "object", "required": ["id"], "properties": {
+            "id": {"type": "string", "description": f"需要导出的{args.module_name}记录标识"},
         }},
     }
     example_params = {
@@ -104,7 +104,7 @@ def main() -> int:
         "update": {"id": "record-id", "changes": {"status": "已更新"}},
         "delete": {"id": "record-id"},
         "approve": {"id": "record-id", "comment": "同意"},
-        "export": {"filters": {"status": "已完成"}},
+        "export": {"id": "record-id"},
     }
     result_schemas = {
         "query": {"type": "object", "description": f"查询{args.module_name}后的结构化业务结果", "required": ["items"], "properties": {
@@ -167,34 +167,24 @@ def main() -> int:
             "resultSchema": result_schemas[operation],
         })
     page_key = f"{module_key}.list"
-    role_operations = {
-        "owner": {"query", "create", "update", "delete", "approve", "export"},
-        "collaborator": {"query", "create", "update", "export"},
-        "approver": {"query", "approve", "export"},
-        "consumer": {"query", "export"},
-    }
-    department_rows = [{
-        **item,
-        "pageKeys": [page_key],
-        "actionKeys": [
-            row["actionKey"] for row in action_rows
-            if row["operation"] in role_operations[item["role"]]
-        ],
-    } for item in departments]
+    department_rows = list(departments)
+    permission_bundles = [
+        ("basic", "基础查看", {"query"}),
+    ]
     access_roles = [{
-        "roleKey": f"{module_key}.{item['key']}.{item['role']}",
-        "name": f"{args.module_name}{item['name']}{'负责人' if item['role'] == 'owner' else '协作角色'}",
-        "suggestedDepartmentKey": item["key"],
+        "roleKey": f"{module_key}.{bundle_key}",
+        "name": f"{args.module_name}{bundle_name}权限组合",
+        "description": "最小冷启动权限组合；发布前应按真实业务增补必要组合。它只供管理员向 SaaS 已有平台角色授权，不创建子系统角色。",
         "pageKeys": [page_key],
         "actionKeys": [
             row["actionKey"] for row in action_rows
-            if row["operation"] in role_operations[item["role"]]
+            if row["operation"] in operations
         ],
-    } for item in department_rows]
+    } for bundle_key, bundle_name, operations in permission_bundles]
     config = {
         "protocol": "zhuojian-subsystem",
         "version": 2,
-        "contractRevision": "2.5",
+        "contractRevision": "2.4",
         "enterprise": {"key": company_slug, "name": args.company_name.strip()},
         "applicationSlug": application_slug,
         "applicationName": args.application_name.strip(),
