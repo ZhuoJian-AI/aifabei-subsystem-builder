@@ -4,7 +4,7 @@
 
 ## 标识和边界
 
-- `enterprise.key`：企业稳定标识，爱法贝为 `aifabei`。
+- `enterprise.key`：企业稳定标识，Alphabet 沿用 `aifabei`，不因显示名称变更而改写。
 - `applicationSlug`：独立模块系统、域名和发布单元。
 - `moduleKey`：业务大模块中的子模块标识。
 - `pageKey`：子模块内稳定页面/工作上下文，也是最小可见边界。
@@ -29,6 +29,23 @@
 
 模块部署时还必须配置 `ZHUOJIAN_ORGANIZATION_ID`，并把它绑定到灼见中该企业的真实 organization UUID。所有 SSO、Action 和事件投递 JWT 都必须同时校验 `aud=applicationSlug` 与 `organizationId=ZHUOJIAN_ORGANIZATION_ID`；不能只检查“organizationId 非空”。
 
+## 平台 AI 与模块边界
+
+灼见 SaaS 是唯一的平台 AI 控制面，负责模型供应商注册和 API Key 保管、模型路由与额度、Manifest/Action 目录、用户最终授权计算、AI 工具选择、短时 Action JWT 签发、确认流程和审计。模型供应商密钥不得进入 Alphabet 模块的源码、镜像、运行环境、数据库或前端，也不得通过 SSO、Bridge、Action 请求或事件传给模块。模块只提供业务能力，不需要知道平台使用哪个模型供应商。
+
+平台 AI 的目标地址必须由已登记的模块 `baseUrl` 和固定路径组成：
+
+```text
+POST <registered-baseUrl>/api/integration/actions/<registered-actionKey>
+Authorization: Bearer <short-lived-zhuojian-action-jwt>
+```
+
+请求体只允许携带本协议定义的 `requestId/moduleKey/pageKey/operation/expectedVersion/params`。不得让模型、用户输入或 `params` 提供 URL、IP、容器端口、数据库连接、路由覆盖或凭证来改变调用目标。平台 AI 不使用 SSO Cookie 代替 Action JWT，不通过 SSH/root 登录执行 CRUD，也不直接连接模块数据库。
+
+ECS 管理员只需在 Runtime 初始化时建立通配域名、HTTPS `443` 和 Nginx 受控反向代理基础。每个模块部署时自动增加自己的域名路由，将公开的网页与固定集成端点代理到该模块容器；不开放数据库端口、Docker API、容器回环端口或通用管理后端。完成 Runtime 初始化后，未来模块不需要管理员逐个新增防火墙端口，但仍须登记 `baseUrl`、同步 Manifest 并由管理员映射角色授权。
+
+子系统不得为了平台 AI 重复建设聊天入口或保存平台模型 Key。如果未来确有独立的 OCR、视觉识别等模块专用模型能力，那是另一个由管理员明确批准的基础设施能力；它仍不得复用平台模型密钥，也不得绕过 Action 权限、确认和审计执行用户业务 CRUD。
+
 ## Manifest 示例
 
 ```json
@@ -36,7 +53,7 @@
   "protocol": "zhuojian-subsystem",
   "version": 2,
   "contractRevision": "2.4",
-  "enterprise": {"key": "aifabei", "name": "爱法贝"},
+  "enterprise": {"key": "aifabei", "name": "Alphabet"},
   "applicationSlug": "sample-review",
   "applicationName": "样品评审系统",
   "bridgeVersion": 1,
@@ -181,6 +198,8 @@ iframe 在模块、页面、实体、筛选或选中项变化后发送。`postMe
 ```
 
 平台提供给 AI 的工具集合必须是：用户有效授权 ∩ 企业/应用 ∩ `moduleKey` ∩ `pageKey` ∩ 页面 `actionKeys` ∩ Manifest `aiEnabled` ∩ 管理员启用 Action。Bridge 不包含 Token、Cookie、密码、内部路径或整表数据。
+
+用户能在页面执行某个 Action，不代表 AI 自动拥有它。只有上述交集仍包含该 Action，且平台 AI 策略允许时，平台才可向模型暴露该工具并为本次调用签发 Action JWT。模块收到请求后必须再次验证 JWT 与 URL 中 `actionKey`、请求体中的模块/页面/操作完全一致；任何不一致都拒绝，不能因为请求来自灼见域名或通过 Nginx 就跳过鉴权。
 
 ## 事件
 

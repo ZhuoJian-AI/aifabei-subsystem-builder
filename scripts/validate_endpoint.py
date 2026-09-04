@@ -37,7 +37,7 @@ def same_origin(left: str, right: str) -> bool:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="验证爱法贝模块系统 v2 接入协议")
+    parser = argparse.ArgumentParser(description="验证 Alphabet 模块系统 v2 接入协议")
     parser.add_argument("--base-url", required=True)
     parser.add_argument("--token-env", default="ZHUOJIAN_INTEGRATION_SECRET", help="保存唯一接入密钥的环境变量名")
     parser.add_argument("--expect-min-modules", type=int, default=1, help="至少应发现多少个子模块")
@@ -49,6 +49,8 @@ def main() -> int:
     token = os.environ.get(args.token_env, "")
 
     health = get_json(urljoin(base, "health"), token)
+    if health.get("status") != "ok":
+        raise SystemExit("/health 必须明确返回 status=ok。")
     manifest_url = urljoin(base, "api/integration/manifest")
     manifest = get_json(manifest_url, token)
     required_manifest = (

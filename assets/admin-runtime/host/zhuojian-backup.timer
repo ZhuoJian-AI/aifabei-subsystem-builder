@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily consistent backup of ZhuoJian-managed module data
+
+[Timer]
+OnCalendar=*-*-* 03:15:00
+RandomizedDelaySec=15m
+Persistent=true
+Unit=zhuojian-backup.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,40 @@
+services:
+  zhuojian-storage-gateway:
+    build:
+      context: .
+    image: zhuojian/storage-gateway:local
+    container_name: zhuojian-storage-gateway
+    restart: unless-stopped
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      GATEWAY_DB_PATH: /var/lib/zhuojian-storage-gateway/registry.sqlite3
+      GATEWAY_ROOT_PREFIX: apps
+      GATEWAY_APPS_ENV_DIR: /etc/zhuojian/apps
+      GATEWAY_INTERNAL_URL: http://zhuojian-storage-gateway:8080
+      GATEWAY_MAX_UPLOAD_BYTES: 536870912
+      GATEWAY_SPOOL_DIR: /var/lib/zhuojian-storage-gateway/tmp
+      GATEWAY_MINIMUM_FREE_BYTES: 5368709120
+      OSS_SECRETS_FILE: /run/secrets/zhuojian-oss-gateway.env
+    volumes:
+      - /var/lib/zhuojian-storage-gateway:/var/lib/zhuojian-storage-gateway
+      - /etc/zhuojian/apps:/etc/zhuojian/apps
+      - /etc/zhuojian/oss-gateway.env:/run/secrets/zhuojian-oss-gateway.env:ro
+    networks:
+      - storage
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=3).read()"
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+networks:
+  storage:
+    name: zhuojian-storage

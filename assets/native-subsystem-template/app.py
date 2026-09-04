@@ -4,19 +4,32 @@ import hashlib
 import hmac
 import json
 import os
+import shutil
 import sqlite3
+import tempfile
 import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 from uuid import uuid4
 
 import jwt
-from fastapi import FastAPI, Header, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from fastapi import FastAPI, Header, HTTPException, Request, Response
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
+from starlette.concurrency import run_in_threadpool
 from starlette.middleware.sessions import SessionMiddleware
+
+from storage import (
+    InvalidStorageKey,
+    StorageAuthorizationError,
+    StorageError,
+    StorageObjectNotFound,
+    StorageUnavailableError,
+    storage_for_backend,
+    storage_from_env,
+)
 
 ROOT = Path(__file__).resolve().parent
 MANIFEST = json.loads((ROOT / "subsystem.json").read_text(encoding="utf-8"))
@@ -37,6 +50,15 @@ EXPECTED_ORGANIZATION_ID = os.getenv("ZHUOJIAN_ORGANIZATION_ID", "")
 SAAS_ORIGINS = [item.strip() for item in os.getenv(
     "ZHUOJIAN_SAAS_ORIGINS", "https://ai-platform.staging.zhuojianai.com"
 ).split(",") if item.strip()]
+try:
+    FILE_STORAGE_MAX_UPLOAD_BYTES = int(os.getenv("FILE_STORAGE_MAX_UPLOAD_BYTES", str(512 * 1024 * 1024)))
+except ValueError as exc:
+    raise RuntimeError("FILE_STORAGE_MAX_UPLOAD_BYTES must be an integer") from exc
+if FILE_STORAGE_MAX_UPLOAD_BYTES <= 0:
+    raise RuntimeError("FILE_STORAGE_MAX_UPLOAD_BYTES must be greater than zero")
+
+FILE_STORAGE: dict[str, Any] = {}
+PRIMARY_STORAGE_BACKEND: str | None = None
 
 if len(INTEGRATION_SECRET) < 32 or len(SESSION_SECRET) < 32 or not EXPECTED_ORGANIZATION_ID:
     raise RuntimeError(
@@ -62,6 +84,62 @@ def db():
         connection.close()
 
 
+def storage_adapter(backend: str | None = None):
+    """Resolve the primary or recorded migration backend without fallback."""
+
+    global PRIMARY_STORAGE_BACKEND
+    if PRIMARY_STORAGE_BACKEND is None:
+        primary = storage_from_env()
+        PRIMARY_STORAGE_BACKEND = primary.backend
+        FILE_STORAGE[primary.backend] = primary
+    selected = {
+        None: PRIMARY_STORAGE_BACKEND,
+        "local-managed": "local",
+        "oss": "oss-gateway",
+        "oss_gateway": "oss-gateway",
+    }.get(backend, backend)
+    if selected not in FILE_STORAGE:
+        FILE_STORAGE[selected] = storage_for_backend(str(selected))
+    return FILE_STORAGE[selected]
+
+
+def upload_spool_dir() -> Path:
+    target = Path(os.getenv("FILE_STORAGE_SPOOL_DIR") or "/data/files/.tmp")
+    target.mkdir(parents=True, exist_ok=True)
+    return target
+
+
+def require_upload_capacity(incoming_bytes: int = 0) -> None:
+    """Enforce the Runtime disk gate for local files and OSS buffering."""
+
+    state_path = os.getenv("FILE_STORAGE_STATE_FILE", "").strip()
+    minimum_free_bytes = 5 * 1024**3
+    if state_path:
+        try:
+            raw = Path(state_path).read_bytes()
+            if len(raw) > 64 * 1024:
+                raise ValueError("state file is too large")
+            state = json.loads(raw)
+            minimum_free_bytes = int(
+                float((state.get("thresholds") or {}).get("minimumFreeGiB", 5))
+                * 1024**3
+            )
+            if state.get("uploadsAllowed") is not True:
+                raise HTTPException(507, "File storage space is insufficient; contact an administrator")
+        except HTTPException:
+            raise
+        except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+            raise HTTPException(503, "File storage capacity status is unavailable") from exc
+    try:
+        free_bytes = shutil.disk_usage(upload_spool_dir()).free
+    except OSError as exc:
+        raise HTTPException(503, "File storage capacity status is unavailable") from exc
+    # During an upload the request spool and the destination/gateway spool can
+    # briefly coexist, so reserve twice the announced payload plus the floor.
+    if free_bytes - (incoming_bytes * 2) < minimum_free_bytes:
+        raise HTTPException(507, "File storage space is insufficient; contact an administrator")
+
+
 def init_db() -> None:
     with db() as connection:
         connection.executescript("""
@@ -84,11 +162,43 @@ def init_db() -> None:
           delivery_id TEXT PRIMARY KEY, event_id TEXT NOT NULL UNIQUE, event_type TEXT NOT NULL,
           result TEXT NOT NULL, received_at TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS stored_files (
+          storage_key TEXT PRIMARY KEY, file_id TEXT NOT NULL UNIQUE,
+          module_key TEXT NOT NULL, original_name TEXT NOT NULL,
+          mime_type TEXT NOT NULL, size INTEGER NOT NULL, sha256 TEXT NOT NULL,
+          storage_backend TEXT NOT NULL, created_by TEXT NOT NULL,
+          business_type TEXT, business_id TEXT,
+          deletion_state TEXT NOT NULL DEFAULT 'active', created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_stored_files_module_created
+          ON stored_files(module_key, created_at DESC);
         """)
+        columns = {
+            row["name"] for row in connection.execute("PRAGMA table_info(stored_files)")
+        }
+        additions = {
+            "file_id": "TEXT",
+            "business_type": "TEXT",
+            "business_id": "TEXT",
+            "deletion_state": "TEXT NOT NULL DEFAULT 'active'",
+        }
+        for column, declaration in additions.items():
+            if column not in columns:
+                connection.execute(
+                    f"ALTER TABLE stored_files ADD COLUMN {column} {declaration}"
+                )
+        connection.execute(
+            "UPDATE stored_files SET file_id=lower(hex(randomblob(16))) WHERE file_id IS NULL OR file_id=''"
+        )
+        connection.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_stored_files_file_id ON stored_files(file_id)"
+        )
 
 
 @app.on_event("startup")
 def startup() -> None:
+    storage_adapter()
+    upload_spool_dir()
     init_db()
 
 
@@ -143,6 +253,63 @@ def session_allows(session: dict, module_key: str, page_key: str, action_key: st
         and action_key in (page.get("actionKeys") or [])
         and page_allows(module_key, page_key, action_key)
     )
+
+
+def require_file_action(
+    request: Request,
+    module_key: str,
+    page_key: str,
+    action_key: str,
+    allowed_operations: set[str],
+) -> dict:
+    session = request.session
+    if not session.get("sub"):
+        raise HTTPException(401, "Open this module from ZhuoJian SaaS")
+    action = ACTIONS.get(action_key)
+    if (
+        action is None
+        or action["moduleKey"] != module_key
+        or action.get("operation") not in allowed_operations
+        or not session_allows(session, module_key, page_key, action_key)
+    ):
+        raise HTTPException(403, "File action context mismatch")
+    permissions = set((session.get("pageAccess") or {}).get(page_key, {}).get("permissions") or [])
+    if "view" not in permissions or required_permission(action["operation"]) not in permissions:
+        raise HTTPException(403, "File action permission denied")
+    return action
+
+
+def safe_upload_filename(filename: str) -> str:
+    candidate = filename.replace("\\", "/").rsplit("/", 1)[-1].strip()
+    candidate = "".join(character for character in candidate if ord(character) >= 32 and ord(character) != 127)
+    if candidate in {"", ".", ".."}:
+        raise HTTPException(422, "A valid filename is required")
+    encoded = candidate.encode("utf-8")
+    if len(encoded) > 240:
+        while len(candidate.encode("utf-8")) > 240:
+            candidate = candidate[:-1]
+    return candidate
+
+
+def storage_http_error(exc: StorageError) -> HTTPException:
+    if isinstance(exc, (StorageObjectNotFound, InvalidStorageKey)):
+        return HTTPException(404 if isinstance(exc, StorageObjectNotFound) else 422, str(exc))
+    if isinstance(exc, StorageAuthorizationError):
+        return HTTPException(503, "File storage authorization is not ready")
+    if isinstance(exc, StorageUnavailableError):
+        return HTTPException(503, "File storage is temporarily unavailable")
+    return HTTPException(503, "File storage is not ready")
+
+
+def stream_storage_object(stream):
+    try:
+        while True:
+            chunk = stream.read(1024 * 1024)
+            if not chunk:
+                break
+            yield chunk
+    finally:
+        stream.close()
 
 
 def required_permission(operation: str) -> str:
@@ -221,7 +388,12 @@ def execute_business_action(action: dict, params: dict, expected_version: str | 
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "applicationSlug": APP_SLUG, "contractRevision": MANIFEST.get("contractRevision")}
+    return {
+        "status": "ok",
+        "applicationSlug": APP_SLUG,
+        "contractRevision": MANIFEST.get("contractRevision"),
+        "fileStorage": storage_adapter().backend,
+    }
 
 
 @app.get("/api/integration/manifest")
@@ -320,6 +492,200 @@ async def invoke_page_action(action_key: str, request: Request):
         raise HTTPException(409, "Explicit page confirmation required")
     params = body.get("params") if isinstance(body.get("params"), dict) else {}
     return execute_business_action(action, params, body.get("expectedVersion"))
+
+
+@app.get("/api/ui/files")
+def list_files(request: Request, moduleKey: str, pageKey: str, actionKey: str):
+    require_file_action(request, moduleKey, pageKey, actionKey, {"query", "export"})
+    with db() as connection:
+        rows = connection.execute(
+            """
+            SELECT file_id,original_name,mime_type,size,sha256,storage_backend,created_at
+            FROM stored_files
+            WHERE module_key=? AND deletion_state='active'
+            ORDER BY created_at DESC LIMIT 200
+            """,
+            (moduleKey,),
+        ).fetchall()
+    return {"items": [{
+        "fileId": row["file_id"],
+        "filename": row["original_name"],
+        "mimeType": row["mime_type"],
+        "size": row["size"],
+        "sha256": row["sha256"],
+        "storageBackend": row["storage_backend"],
+        "createdAt": row["created_at"],
+    } for row in rows]}
+
+
+@app.post("/api/ui/files", status_code=201)
+async def upload_file(
+    request: Request,
+    moduleKey: str,
+    pageKey: str,
+    actionKey: str,
+    filename: str,
+    businessType: str | None = None,
+    businessId: str | None = None,
+):
+    require_file_action(request, moduleKey, pageKey, actionKey, {"create", "update"})
+    filename = safe_upload_filename(filename)
+    announced_size = request.headers.get("content-length")
+    if announced_size:
+        try:
+            announced_bytes = int(announced_size)
+            if announced_bytes > FILE_STORAGE_MAX_UPLOAD_BYTES:
+                raise HTTPException(413, "File exceeds this module's upload limit")
+            if announced_bytes < 0:
+                raise HTTPException(400, "Invalid Content-Length")
+        except ValueError as exc:
+            raise HTTPException(400, "Invalid Content-Length") from exc
+    else:
+        announced_bytes = 0
+    require_upload_capacity(announced_bytes)
+
+    now = datetime.now(timezone.utc)
+    file_id = uuid4().hex
+    storage_key = f"{moduleKey}/{now:%Y/%m}/{file_id}"
+    content_type = request.headers.get("content-type") or "application/octet-stream"
+    with tempfile.SpooledTemporaryFile(
+        max_size=8 * 1024 * 1024,
+        mode="w+b",
+        dir=upload_spool_dir(),
+    ) as spool:
+        received = 0
+        async for chunk in request.stream():
+            received += len(chunk)
+            if received > FILE_STORAGE_MAX_UPLOAD_BYTES:
+                raise HTTPException(413, "File exceeds this module's upload limit")
+            require_upload_capacity()
+            spool.write(chunk)
+        spool.seek(0)
+        try:
+            metadata = await run_in_threadpool(
+                lambda: storage_adapter().put(storage_key, spool, content_type=content_type)
+            )
+        except StorageError as exc:
+            raise storage_http_error(exc) from exc
+
+    try:
+        with db() as connection:
+            connection.execute(
+                """
+                INSERT INTO stored_files(
+                  storage_key,file_id,module_key,original_name,mime_type,size,sha256,
+                  storage_backend,created_by,business_type,business_id,deletion_state,created_at
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    metadata.storage_key,
+                    file_id,
+                    moduleKey,
+                    filename,
+                    content_type,
+                    metadata.size,
+                    metadata.sha256 or "",
+                    metadata.backend,
+                    str(request.session["sub"]),
+                    businessType,
+                    businessId,
+                    "active",
+                    now.isoformat(),
+                ),
+            )
+    except sqlite3.Error as exc:
+        try:
+            await run_in_threadpool(storage_adapter().delete, metadata.storage_key)
+        except StorageError:
+            pass
+        raise HTTPException(500, "File metadata could not be saved") from exc
+
+    return {
+        "fileId": file_id,
+        "storageBackend": metadata.backend,
+        "filename": filename,
+        "mimeType": content_type,
+        "size": metadata.size,
+        "sha256": metadata.sha256,
+    }
+
+
+@app.get("/api/ui/files/{file_id}")
+async def download_file(
+    file_id: str,
+    request: Request,
+    moduleKey: str,
+    pageKey: str,
+    actionKey: str,
+):
+    require_file_action(request, moduleKey, pageKey, actionKey, {"query", "export"})
+    with db() as connection:
+        row = connection.execute(
+            """
+            SELECT storage_key,module_key,original_name,mime_type,size,sha256,storage_backend
+            FROM stored_files
+            WHERE file_id=? AND module_key=? AND deletion_state='active'
+            """,
+            (file_id, moduleKey),
+        ).fetchone()
+    if row is None:
+        raise HTTPException(404, "File metadata not found")
+    try:
+        stream = await run_in_threadpool(
+            storage_adapter(row["storage_backend"]).open,
+            row["storage_key"],
+        )
+    except StorageError as exc:
+        raise storage_http_error(exc) from exc
+    encoded_filename = quote(row["original_name"], safe="")
+    return StreamingResponse(
+        stream_storage_object(stream),
+        media_type=row["mime_type"],
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}",
+            "Content-Length": str(row["size"]),
+            "X-Content-SHA256": row["sha256"],
+            "Cache-Control": "private, no-store",
+        },
+    )
+
+
+@app.delete("/api/ui/files/{file_id}", status_code=204)
+async def delete_file(
+    file_id: str,
+    request: Request,
+    moduleKey: str,
+    pageKey: str,
+    actionKey: str,
+):
+    require_file_action(request, moduleKey, pageKey, actionKey, {"delete"})
+    with db() as connection:
+        row = connection.execute(
+            """
+            SELECT storage_key,storage_backend,deletion_state
+            FROM stored_files WHERE file_id=? AND module_key=?
+            """,
+            (file_id, moduleKey),
+        ).fetchone()
+        if row is None or row["deletion_state"] == "deleted":
+            return Response(status_code=204)
+        connection.execute(
+            "UPDATE stored_files SET deletion_state='pending' WHERE file_id=?",
+            (file_id,),
+        )
+    try:
+        await run_in_threadpool(
+            storage_adapter(row["storage_backend"]).delete,
+            row["storage_key"],
+        )
+    except StorageError as exc:
+        raise storage_http_error(exc) from exc
+    with db() as connection:
+        connection.execute(
+            "UPDATE stored_files SET deletion_state='deleted' WHERE file_id=?",
+            (file_id,),
+        )
+    return Response(status_code=204)
 
 
 @app.get("/api/integration/sso")

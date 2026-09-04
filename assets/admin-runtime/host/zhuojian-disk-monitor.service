@@ -1,0 +1,14 @@
+[Unit]
+Description=ZhuoJian managed storage capacity gate
+After=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/zhuojian-runtime disk-check --write-state --always-success
+User=root
+Group=root
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/run/zhuojian

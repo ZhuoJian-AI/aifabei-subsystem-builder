@@ -1,10 +1,10 @@
 # 管理员与服务器初始化
 
-本模式供灼见管理员 AI 使用。目标是把企业提供的一台 ECS 初始化为可重复运行多个模块系统的环境。每台 ECS 只初始化一次；业务用户和业务 AI 不需要 GitHub、Coolify、阿里云控制台或手工配置 Nginx。
+本模式供灼见管理员 AI 使用。目标是把 Alphabet 提供的一台 ECS 初始化为可重复运行多个模块系统的环境。每台 ECS 只初始化一次；业务负责人和业务 AI 不需要 GitHub、Coolify、阿里云控制台或手工配置 Nginx。
 
 ## 输入与边界
 
-- 允许输入：云控制台会话或 ECS 管理入口、目标企业、组织 UUID、域名后缀、灼见管理员会话。
+- 允许输入：服务器公网地址与 root 账号密码，或已登录的云控制台会话；后续平台登记再需要 Alphabet 组织 UUID、域名后缀和灼见管理员会话。收到服务器地址与 root 凭证后，AI 按 [ECS 首次接入](ecs-first-access.md) 自动登录，并按 [SSH、VPN 与代理访问](ssh-access.md) 验证业务电脑实际使用的 VPN/代理路径。标准 SSH `22` 已通过时不必改造 Nginx 或安装 `sslh`；只有 `22` 受限且确有需要时才配置 SSH/HTTPS `443` 复用。管理员可在现在或以后一次性绑定 Alphabet 企业 OSS；业务 AI 永远不需要阿里云账号、Bucket、RAM、AccessKey 或逐项目令牌。
 - 密码、SSH 密钥、模块接入密钥和 ECS 登记凭证不得进入本地 Git、环境档案、日志或回复。
 - 默认保留服务器全部既有容器、虚拟主机、数据库和数据目录。新资源使用 `zhuojian-<enterprise>-<application>` 标识。
 - 管理员 AI 只建立运行底座、域名规则和登记入口，不替业务 AI 编写业务流程。
@@ -14,9 +14,10 @@
 
 1. 只读记录实例区域、公网/内网地址、系统版本、CPU、内存、Swap、磁盘、Git、Docker、Nginx、监听端口、容器、数据目录、现有域名和备份状态。
 2. 确认通配 DNS `*.<企业域名后缀>` 解析到该 ECS。一个模块系统一个子域名；多个系统共享 ECS 时使用独立容器、回环端口和数据目录。
-3. 安装或核验 Git、Docker、Docker Compose、Nginx 和 HTTPS 证书工具。不得安装 GitHub CLI、GitHub App、Coolify Agent 或 Coolify Server 作为本流程依赖。
-4. 只公开 80/443；数据库、Redis 和模块内部端口只绑定 Docker 网络或 `127.0.0.1`。SSH 沿用管理员批准的来源范围。
-5. 建立固定目录并限制权限：
+3. 按 [Alphabet 文件存储与 OSS 迁移](object-storage.md) 确定文件策略。Runtime 首次登记固定使用 `local-managed`；后续主机工具会建立数据目录、模块隔离、磁盘阈值和数据库加文件的一致性备份。管理员可以先准备同地域私有 Bucket 和 RAM 网关身份，但只有 Runtime 与主机工具安装完成后，才安装文件网关并通过真实验收切换默认模式。
+4. 安装或核验 Git、Docker、Docker Compose、Nginx 和 HTTPS 证书工具。不得安装 GitHub CLI、GitHub App、Coolify Agent 或 Coolify Server 作为本流程依赖。
+5. Web 只公开 80/443；管理连接优先使用业务 VPN 可达的标准 SSH `22`。只有 `22` 在业务路径上不可用时，才按 [SSH、VPN 与代理访问](ssh-access.md) 让公网 `443` 同时承载 HTTPS 和 SSH，并把 Nginx TLS 后端改为回环 `8443`。数据库、Redis、文件网关和模块内部端口只绑定 Docker 网络或 `127.0.0.1`。
+6. 建立固定目录并限制权限：
 
    ```text
    /srv/zhuojian/repositories/   ECS 本地 Git 仓库
@@ -27,9 +28,10 @@
    /etc/nginx/conf.d/             每个模块的 Host 路由
    ```
 
-6. 安装受控直接部署入口。它只能在以上目录内创建/更新指定 `applicationSlug`，分配回环端口、构建不可变镜像、生成 Nginx 虚拟主机、检查 HTTPS/健康和回滚本次发布；不得运行全局 Docker prune、删除未知卷或重启无关服务。
-7. 管理员在灼见为该企业签发一枚 **ECS Runtime 登记凭证**。优先运行 `scripts/provision_runtime.py`，让它调用平台接口并分别写入凭证和环境档案；不得复制到命令参数、终端回显或回复。凭证文件固定为 `/etc/zhuojian/runtime-registration.key`，权限为目录 `0700`、文件 `0600`。它只允许把该域名后缀下、该组织的健康模块登记/重新同步到灼见，不允许部署代码、管理服务器、授予权限或访问其他企业。
-8. 生成不含密钥的 `/etc/zhuojian/runtime.json`，然后用一个最小测试容器验证域名隔离、HTTPS、`/health`、Manifest 可达和登记链路。测试资源使用独立名称和数据目录，不碰已有项目。
+7. 管理员在灼见为该企业签发一枚 **ECS Runtime 登记凭证**。先运行 `scripts/provision_runtime.py`，让它调用平台接口并分别写入 `/etc/zhuojian/runtime-registration.key` 与不含密钥的 `/etc/zhuojian/runtime.json`；不得复制到命令参数、终端回显或回复。凭证文件权限固定为目录 `0700`、文件 `0600`。它只允许把该域名后缀下、该组织的健康模块登记/重新同步到灼见，不允许部署代码、管理服务器、授予权限或访问其他企业。
+8. Runtime 档案和登记凭证已经落盘后，把 `assets/admin-runtime/host/` 传到 ECS 并以 root 在该目录运行 `sh ./install.sh`，安装 `zhuojian-runtime` 受控直接部署入口。标准 SSH `22` 已验证时不得传 443 参数；只有管理员已另外安装并实测 SSH/HTTPS 复用后，才运行 `sh ./install.sh --enable-ssh-https-multiplex --public-address <ECS公网地址>`。入口只能在固定目录内创建/更新指定 `applicationSlug`，分配回环端口、建立固定文件目录、构建不可变镜像、生成 Nginx 虚拟主机、检查 HTTPS/健康和回滚本次发布；不得运行全局 Docker prune、删除未知卷或重启无关服务。
+9. 管理员选择 OSS 时，再按 [Alphabet 文件存储与 OSS 迁移](object-storage.md) 安装 `assets/admin-runtime/gateway/`，写入企业级 root-only 凭证，并运行 `zhuojian-runtime configure-oss-gateway`。只有真实探针全部通过后，未来系统的默认存储才切换成 `oss-gateway`；已有 release 不迁移。
+10. 从业务实际使用的外部 Codex（允许启用 VPN/代理）验证 SSH Banner 和 root 密码登录；再用两个最小测试应用验证域名隔离、HTTPS、`/health`、Manifest、登记链路、本地上传/下载、目录隔离、磁盘阈值和重建容器后读取。OSS 模式必须额外完成真实 PUT、GET、DELETE、同名对象双应用隔离、临时身份撤销与网关重启复验。测试资源使用独立名称和数据目录，不碰已有项目。
 
 ## 环境档案
 
@@ -60,6 +62,8 @@
     "compose": true,
     "nginx": true,
     "persistentData": true,
+    "fileStorage": true,
+    "objectStorage": false,
     "sourceBuild": true,
     "maxConcurrentBuilds": 1
   },
@@ -70,8 +74,27 @@
     "appPortRange": [18000, 18999]
   },
   "network": {
-    "publicPorts": [80, 443],
-    "privateServicePortsOnly": true
+    "publicPorts": [22, 80, 443],
+    "privateServicePortsOnly": true,
+    "managementAccess": {
+      "mode": "standard-ssh",
+      "host": "<ECS公网IP或域名>",
+      "connectionOrder": [22],
+      "businessAiPort": 22,
+      "requiresVpn": true,
+      "requiresCloudConsole": false,
+      "verified": true
+    }
+  },
+  "fileStorage": {
+    "provider": "local-disk",
+    "mode": "local-managed",
+    "root": "/srv/zhuojian/data",
+    "pathTemplate": "{applicationSlug}/files",
+    "warningUsedPercent": 80,
+    "stopUploadUsedPercent": 90,
+    "minimumFreeGiB": 5,
+    "verified": true
   },
   "platform": {
     "baseUrl": "https://ai-platform.staging.zhuojianai.com",
@@ -86,7 +109,7 @@
 }
 ```
 
-业务 AI 只读取这份非敏感档案，选择尚未占用的 `applicationSlug`，在固定目录开发和发布；不得要求用户再次登录阿里云、GitHub、Coolify或手工编辑 Nginx。
+业务 AI 只读取这份非敏感档案，选择尚未占用的 `applicationSlug`，在固定目录开发和发布。本地模式不包含 OSS 凭证；切换 OSS 后，业务 AI 只运行 `zhuojian-runtime ensure-app/deploy`，不申请、填写、复制或输出 `credentialRef`、RAM AccessKey 或项目令牌。由于日常连接当前使用 root，这是一条工作流约束而不是对 root 的技术权限承诺；真正需要主机级秘密隔离时必须另设受限部署账号。不得要求负责人登录阿里云、GitHub、Coolify或手工编辑 Nginx。
 
 ## SaaS Runtime 接口
 
@@ -108,8 +131,25 @@ python <skill>/scripts/provision_runtime.py \
   --enterprise-key aifabei \
   --environment staging \
   --domain-suffix aifabei.staging.zhuojianai.com \
-  --public-address <ECS公网IP>
+  --public-address <ECS公网IP> \
+  --management-access-mode standard-ssh \
+  --management-access-requires-vpn \
+  --management-access-verified \
+  --storage-mode local \
+  --storage-verified
 ```
+
+`provision_runtime.py` 只负责第一次 Runtime 登记，并且只接受 `--storage-mode local`。不要用一个人工 `--verified` 开关直接声明 OSS 可用。
+
+若 `/etc/zhuojian/runtime.json` 已存在，绝对不要再次运行该脚本或重新签发登记凭证。管理员按 [Alphabet 文件存储与 OSS 迁移](object-storage.md) 安装企业网关后，只执行一次原地升级：
+
+```text
+zhuojian-runtime configure-oss-gateway \
+  --bucket <企业私有Bucket> \
+  --region <阿里云地域ID>
+```
+
+该命令会先检查网关、秘密文件和 Docker 私网，再运行真实对象读写与两个临时应用的隔离探针。任一项失败时保持原 Runtime 档案和既有应用不变；通过后才把 `oss-gateway` 设置成未来应用的默认模式。旧 release 继续使用自己记录的存储后端（包括本地目录或既有签名上传方案），不会被顺带迁移。
 
 平台管理员可用以下接口查看、停用或轮换，业务 AI 不得调用：
 
@@ -127,10 +167,12 @@ POST  /api/v1/ecs-publisher/organizations/{organizationId}/runtimes/{runtimeId}/
 - 小规格服务器 `maxConcurrentBuilds` 固定为 `1`。测试、Playwright和 Schema 校验在开发目录执行，不进入生产镜像。
 - 磁盘必须同时容纳当前镜像、下一镜像、本地 Git 和备份。余量不足时停止发布，只能清理本次可确认的构建缓存，禁止全局 prune 或删除未知卷。
 - Dockerfile 的 `/health` 检查必须使用镜像实际具备的运行时命令，不得假设存在 `curl` 或 `wget`。
+- 本地模式下磁盘还要容纳附件和导出文件。默认使用率达到 80%告警；达到 90%或剩余不足 5 GiB 时停止新上传和发布，但保持既有文件可读。不得自动删除未知文件。
+- 对象存储也不替代 ECS 数据盘。数据库、Docker、本地 Git、构建缓存和临时处理始终需要磁盘余量。
 
 ## 验收与回滚
 
-- 验收：通配 DNS、HTTPS、两个 Host 不串站、Docker 健康、Nginx 配置、数据库端口不公网暴露、ECS 登记凭证只能登记本企业且不会自动授权。
+- 验收：外部 Codex 通过业务实际使用的网络路径（允许 VPN/代理）在标准 `22` 或已配置的 `443` 读取 SSH Banner，并通过交互式 root 密码登录；同时 HTTPS、通配 DNS、两个 Host 不串站、Docker 健康、Nginx 配置、数据库端口不公网暴露、ECS 登记凭证只能登记本企业且不会自动授权；本地文件目录固定挂载、权限隔离、磁盘阈值与一致性备份有效。OSS 模式追加检查 Bucket 私有且同地域、RAM 只允许指定 Bucket 的 `apps/*`、网关不暴露公网端口、真实 PUT/GET/DELETE、双应用隔离、重启后复验和新应用自动 `ensure-app`。
 - 记录新增 DNS record ID、安全组 rule ID、Nginx 文件、容器、数据目录和证书域名。
 - 回滚只删除本次新增且带精确标识的测试容器、Nginx 文件和空测试目录；不删除已有 Git 仓库、业务数据或未知卷。
 - 本地 Git 和业务数据与 ECS 同盘时必须配置 ECS 快照或企业指定的异地备份；GitHub 不作为必需备份目标。

@@ -6,11 +6,16 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import stat
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
+
+
+STORAGE_GATEWAY_URL = "http://zhuojian-storage-gateway:8080"
+STORAGE_CREDENTIAL_REF = Path("/etc/zhuojian/oss-gateway.env")
 
 
 def call_json(url: str, token: str, body: dict) -> dict:
@@ -23,7 +28,7 @@ def call_json(url: str, token: str, body: dict) -> dict:
             "Authorization": f"Bearer {token}",
             "Accept": "application/json",
             "Content-Type": "application/json",
-            "User-Agent": "Aifabei-Runtime-Provisioner/1.0",
+            "User-Agent": "Alphabet-Runtime-Provisioner/1.0",
         },
     )
     try:
@@ -57,6 +62,57 @@ def _https_platform(value: str) -> str:
     return value.rstrip("/")
 
 
+def _storage_bucket(value: str) -> str:
+    value = value.strip()
+    if not re.fullmatch(r"[a-z0-9][a-z0-9-]{1,61}[a-z0-9]", value):
+        raise argparse.ArgumentTypeError("storage-bucket 必须是 3–63 位小写字母、数字或连字符")
+    return value
+
+
+def _storage_region(value: str) -> str:
+    value = value.strip()
+    if not re.fullmatch(r"[a-z0-9][a-z0-9-]+", value):
+        raise argparse.ArgumentTypeError("storage-region 必须是有效的阿里云地域 ID")
+    return value
+
+
+def _storage_gateway(value: str) -> str:
+    parsed = urlsplit(value)
+    loopback = parsed.hostname in {"127.0.0.1", "localhost", "::1"}
+    managed_docker_service = (
+        parsed.scheme == "http"
+        and parsed.hostname == "zhuojian-storage-gateway"
+        and parsed.port == 8080
+    )
+    if (
+        not parsed.hostname
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or parsed.fragment
+        or parsed.path not in {"", "/"}
+        or (
+            parsed.scheme != "https"
+            and not (parsed.scheme == "http" and loopback)
+            and not managed_docker_service
+        )
+    ):
+        raise argparse.ArgumentTypeError(
+            "storage-gateway-url 必须是 HTTPS、ECS 回环 HTTP，"
+            "或受管 Docker 网关 http://zhuojian-storage-gateway:8080"
+        )
+    return value.rstrip("/")
+
+
+def _management_host(value: str) -> str:
+    value = value.strip()
+    if not value or "://" in value or any(char.isspace() for char in value):
+        raise argparse.ArgumentTypeError(
+            "management-access-host 必须是公网 IP 或域名，不能包含协议和路径"
+        )
+    return value
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="管理员为一台企业 ECS 签发最小权限 Runtime 登记凭证"
@@ -75,7 +131,62 @@ def main() -> int:
         default="staging",
     )
     parser.add_argument("--domain-suffix", required=True)
-    parser.add_argument("--public-address")
+    parser.add_argument("--public-address", type=_management_host)
+    parser.add_argument(
+        "--management-access-mode",
+        choices=("standard-ssh", "ssh-https-multiplex"),
+        default="standard-ssh",
+        help="默认通过业务 VPN 使用 SSH 22；仅在需要时选择 443 与 HTTPS 复用",
+    )
+    parser.add_argument(
+        "--management-access-requires-vpn",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="业务 AI 的已验证 SSH 路径是否需要 VPN/受管代理；默认需要",
+    )
+    parser.add_argument(
+        "--management-access-host",
+        type=_management_host,
+        help="默认复用 --public-address",
+    )
+    parser.add_argument(
+        "--management-access-verified",
+        action="store_true",
+        required=True,
+        help="仅在外部 Codex 已读取 SSH Banner 并用 root 密码真实登录后传入",
+    )
+    parser.add_argument(
+        "--storage-mode",
+        choices=("local", "oss"),
+        default="local",
+        help="初始登记固定为 local；OSS 必须在网关真实验收后单独启用",
+    )
+    parser.add_argument(
+        "--local-storage-root",
+        type=Path,
+        default=Path("/srv/zhuojian/data"),
+    )
+    parser.add_argument("--storage-warning-used-percent", type=int, default=80)
+    parser.add_argument("--storage-stop-upload-used-percent", type=int, default=90)
+    parser.add_argument("--storage-minimum-free-gib", type=float, default=5)
+    parser.add_argument("--storage-bucket", type=_storage_bucket)
+    parser.add_argument("--storage-region", type=_storage_region)
+    parser.add_argument(
+        "--storage-gateway-url",
+        type=_storage_gateway,
+        default=STORAGE_GATEWAY_URL,
+    )
+    parser.add_argument(
+        "--storage-verified",
+        action="store_true",
+        required=True,
+        help="仅在管理员已完成真实上传、下载和跨系统隔离验收后传入",
+    )
+    parser.add_argument(
+        "--storage-credential-ref",
+        type=Path,
+        default=STORAGE_CREDENTIAL_REF,
+    )
     parser.add_argument("--admin-token-env", default="ZHUOJIAN_ADMIN_TOKEN")
     parser.add_argument(
         "--profile-out",
@@ -88,6 +199,27 @@ def main() -> int:
         default=Path("/etc/zhuojian/runtime-registration.key"),
     )
     args = parser.parse_args()
+
+    if not PurePosixPath(args.local_storage_root.as_posix()).is_absolute():
+        parser.error("--local-storage-root 必须是绝对路径")
+    if not 1 <= args.storage_warning_used_percent < args.storage_stop_upload_used_percent < 100:
+        parser.error("磁盘阈值必须满足 1 <= warning < stop < 100")
+    if args.storage_minimum_free_gib <= 0:
+        parser.error("--storage-minimum-free-gib 必须大于 0")
+    if not PurePosixPath(args.storage_credential_ref.as_posix()).is_absolute():
+        parser.error("--storage-credential-ref 必须是绝对路径")
+    management_host = args.management_access_host or args.public_address
+    if not management_host:
+        parser.error(
+            "必须提供 --public-address 或 --management-access-host，"
+            "用于业务 AI 的 SSH 入口"
+        )
+    if args.storage_mode == "oss":
+        parser.error(
+            "初始 Runtime 登记不接受 --storage-mode oss。先以 local 完成登记，"
+            "再安装企业 OSS 网关，并由 zhuojian-runtime configure-oss-gateway "
+            "执行真实 PUT/GET/DELETE 与双应用隔离验收后切换默认存储。"
+        )
 
     admin_token = os.getenv(args.admin_token_env, "").strip()
     if not admin_token:
@@ -117,6 +249,48 @@ def main() -> int:
     profile.setdefault("deployment", {})["registrationCredentialRef"] = str(
         args.credential_out
     )
+    capabilities = profile.setdefault("capabilities", {})
+    capabilities["fileStorage"] = True
+    capabilities["objectStorage"] = False
+    capabilities["passwordSshAccess"] = True
+    network = profile.setdefault("network", {})
+    network["publicPorts"] = (
+        [80, 443]
+        if args.management_access_mode == "ssh-https-multiplex"
+        else [22, 80, 443]
+    )
+    network["managementAccess"] = {
+        "mode": args.management_access_mode,
+        "host": management_host,
+        "connectionOrder": (
+            [22, 443]
+            if args.management_access_mode == "ssh-https-multiplex"
+            else [22]
+        ),
+        "businessAiPort": (
+            443 if args.management_access_mode == "ssh-https-multiplex" else 22
+        ),
+        "requiresVpn": args.management_access_requires_vpn,
+        "requiresCloudConsole": False,
+        "verified": args.management_access_verified,
+    }
+    profile["fileStorage"] = {
+        "provider": "local-disk",
+        "mode": "local-managed",
+        "defaultMode": "local-managed",
+        "root": args.local_storage_root.as_posix(),
+        "pathTemplate": "{applicationSlug}/files",
+        "warningUsedPercent": args.storage_warning_used_percent,
+        "stopUploadUsedPercent": args.storage_stop_upload_used_percent,
+        "minimumFreeGiB": args.storage_minimum_free_gib,
+        "verified": args.storage_verified,
+    }
+    profile.pop("objectStorage", None)
+    secret_refs = profile.setdefault("secretRefs", [])
+    if not isinstance(secret_refs, list) or not all(
+        isinstance(item, str) for item in secret_refs
+    ):
+        raise SystemExit("灼见 API 返回的 runtime_profile.secretRefs 格式无效")
     secure_write(args.credential_out, credential + "\n")
     try:
         secure_write(
@@ -137,6 +311,11 @@ def main() -> int:
                 "runtimeKey": runtime.get("runtime_key") or args.runtime_key,
                 "organizationId": args.organization_id,
                 "domainSuffix": args.domain_suffix,
+                "managementAccess": args.management_access_mode,
+                "managementAccessRequiresVpn": args.management_access_requires_vpn,
+                "businessAiSshPort": network["managementAccess"]["businessAiPort"],
+                "fileStorage": "local",
+                "objectStorage": "disabled",
                 "profile": str(args.profile_out),
                 "credential": "installed",
             },

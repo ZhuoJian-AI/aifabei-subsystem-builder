@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "zhuojian-storage-gateway"
+version = "0.1.0"
+description = "Private, prefix-isolated OSS gateway for ZhuoJian runtimes"
+requires-python = ">=3.10"
+dependencies = [
+  "fastapi>=0.110,<1",
+  "oss2>=2.18,<3",
+  "uvicorn[standard]>=0.27,<1",
+]
+
+[project.optional-dependencies]
+test = [
+  "httpx>=0.26,<1",
+  "pytest>=8,<9",
+]
+
+[project.scripts]
+zhuojian-storage-gateway-admin = "zhuojian_storage_gateway.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

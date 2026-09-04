@@ -1,4 +1,4 @@
 interface:
-  display_name: "爱法贝模块系统搭建"
-  short_description: "小白说业务，AI 建多子模块系统并安全接入灼见"
+  display_name: "Alphabet 模块系统搭建"
+  short_description: "小白说业务，AI 建模块、管文件并安全接入灼见"
   default_prompt: "使用 $aifabei-subsystem-builder 按我的业务描述搭建、部署或修改模块系统，配置参与部门、页面与 AI 共用操作，并输出灼见管理员接入回执。"

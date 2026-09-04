@@ -1,0 +1,16 @@
+[Unit]
+Description=Consistent backup of ZhuoJian-managed module data
+After=docker.service local-fs.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/zhuojian-runtime backup-all
+User=root
+Group=root
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/srv/zhuojian/backups /run/lock /run/docker.sock
+TimeoutStartSec=4h

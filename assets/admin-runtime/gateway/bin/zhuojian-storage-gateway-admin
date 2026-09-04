@@ -1,0 +1,5 @@
+#!/bin/sh
+set -eu
+
+exec docker exec -i zhuojian-storage-gateway \
+  python -m zhuojian_storage_gateway.cli "$@"

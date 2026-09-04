@@ -1,0 +1,3 @@
+fastapi>=0.110,<1
+oss2>=2.18,<3
+uvicorn[standard]>=0.27,<1
