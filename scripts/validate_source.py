@@ -8,17 +8,30 @@ import re
 from pathlib import Path
 
 
-TEXT_SUFFIXES = {".html", ".js", ".jsx", ".ts", ".tsx", ".vue", ".svelte", ".py"}
+TEXT_SUFFIXES = {
+    ".html", ".js", ".jsx", ".ts", ".tsx", ".vue", ".svelte", ".py",
+    ".json", ".yaml", ".yml", ".toml", ".ini", ".cfg",
+}
+TEXT_NAMES = {"Dockerfile", ".env", ".env.example"}
 IGNORED_PARTS = {".git", ".venv", "node_modules", "dist", "build", "data"}
 WILDCARD_POST_MESSAGE = re.compile(
     r"postMessage\s*\((?:(?!;).){0,8000}?,\s*(['\"])\*\1\s*\)",
     re.DOTALL,
 )
+PLATFORM_MODEL_CREDENTIAL = re.compile(
+    r"\b(?:OPENAI|ANTHROPIC|DASHSCOPE|AZURE_OPENAI|GEMINI|DEEPSEEK|QWEN)_API_KEY\b"
+    r"|\b(?:OPENAI|ANTHROPIC|DASHSCOPE|AZURE_OPENAI|GEMINI|DEEPSEEK|QWEN)_API_TOKEN\b",
+    re.IGNORECASE,
+)
 
 
 def source_files(root: Path):
     for path in root.rglob("*"):
-        if not path.is_file() or path.suffix.lower() not in TEXT_SUFFIXES:
+        if not path.is_file() or (
+            path.suffix.lower() not in TEXT_SUFFIXES
+            and path.name not in TEXT_NAMES
+            and not path.name.startswith(".env.")
+        ):
             continue
         if any(part in IGNORED_PARTS for part in path.parts) or path.stat().st_size > 5_000_000:
             continue
@@ -59,6 +72,10 @@ def main() -> int:
             "STORAGE_GATEWAY_URL",
             "STORAGE_PROJECT_TOKEN",
         ) if token in text)
+        if PLATFORM_MODEL_CREDENTIAL.search(text):
+            failures.append(
+                f"{path.relative_to(root)}: 平台模型供应商凭证只能配置在灼见 SaaS 底座"
+            )
         if (args.requires_file_storage or args.requires_object_storage) and re.search(
             r"(?:ALIYUN|OSS)_(?:ACCESS|SECRET)[A-Z_]*KEY|AccessKeySecret|accessKeyId",
             text,
@@ -96,7 +113,10 @@ def main() -> int:
         for failure in failures:
             print(f"- {failure}")
         return 1
-    print("SOURCE VALIDATION PASS: bridge origin and v2.4 SSO page/action scope are present")
+    print(
+        "SOURCE VALIDATION PASS: platform model credentials are absent; "
+        "bridge origin and v2.4 SSO page/action scope are present"
+    )
     return 0
 
 

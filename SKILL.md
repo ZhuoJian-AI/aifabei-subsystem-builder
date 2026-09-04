@@ -27,6 +27,10 @@ VPN 或代理只解决“网络能否到服务器”，不会改变 root 账号�
 
 模块业务数据始终留在模块自己的数据库。灼见只保存登记、Manifest、授权、Action 目录、审计、事件游标和必要索引；禁止直接连接模块数据库。
 
+平台 AI 固定属于灼见 SaaS 控制面。模型供应商注册、API Key、模型路由、额度、AI 编排、Action 凭证签发和审计都由平台管理员在 SaaS 底座管理；Alphabet 模块不得要求业务负责人填写模型供应商或 API Key，不得保存或复用平台模型密钥，也不得为了让平台 AI 工作而在模块内再搭一套聊天 AI。模块只负责声明并实现可调用的业务 Action。平台 AI 只能从已登记 Manifest 中选择 `aiEnabled=true` 且当前用户最终授权允许的 Action，再以短时 `zhuojian-action` 凭证调用模块。
+
+平台 AI 不登录 ECS、不使用 root/SSH、不连接模块数据库，也不能在请求体中指定任意后端 URL。调用目标只能由已登记的模块 `baseUrl` 与固定路径 `/api/integration/actions/{actionKey}` 组成；Action 凭证放在 `Authorization: Bearer`，请求体只传契约字段和业务参数。公网只开放 Nginx 的 HTTPS `443`，由 Nginx 按模块域名反向代理到对应容器；数据库、Docker 管理端口、容器回环端口和任意内部管理接口不得暴露给 SaaS 或 AI。
+
 用户上传或系统生成的 Excel、Word、PPT、PDF、图片、音视频、压缩包和其他持久文件不进入数据库或容器可写层。新环境默认进入模块独立的 ECS 固定数据目录；管理员以后可迁移到 Alphabet 企业 OSS。无论使用硬盘还是 OSS，业务代码必须经过同一存储适配层并保存稳定 `storageKey`，使前端和业务接口在迁移时不变。负责人不需要了解阿里云、Bucket、RAM、AccessKey 或服务器路径。完整规则及迁移步骤见 [Alphabet 文件存储与 OSS 迁移](references/object-storage.md)。
 
 GitHub 和 Coolify 不属于本 Skill 的企业模块开发、部署或更新链路。源码以企业 ECS 上的本地 Git 仓库为准，Docker 运行模块，Nginx 提供域名和 HTTPS。若需异地备份，使用 ECS 快照或企业指定的备份位置，不把远程 Git 作为业务用户前置条件。
@@ -66,6 +70,7 @@ GitHub 和 Coolify 不属于本 Skill 的企业模块开发、部署或更新链
 - 检查结果已有相符 `applicationSlug` 时，不得通过新目录、新域名或名称后缀绕开扩展；新增子模块必须沿用原系统并保持已有 `moduleKey`、页面路由、Action 和数据迁移兼容。
 - 每个项目必须是本地 Git 仓库；发布前提交本次修改并保持工作树干净。不得因为没有 GitHub 而省略版本、回滚和变更审查。
 - 管理员交付的环境档案必须明确目标 ECS、域名后缀、资源限制、部署目录和登记凭证引用。业务 AI 不得把服务器密码、接入密钥或登记凭证写入 Git、日志或回复。
+- 模型供应商注册和密钥只存在于灼见 SaaS 底座。项目源码、镜像、部署环境和模块数据库不得出现 `OPENAI_API_KEY`、`ANTHROPIC_API_KEY`、`DASHSCOPE_API_KEY`、`AZURE_OPENAI_API_KEY`、`GEMINI_API_KEY`、`DEEPSEEK_API_KEY` 等平台模型凭证。业务 AI 只实现业务 Action，不向负责人索取模型供应商、Key、Base URL 或模型名称。
 - 业务需求只要出现附件、上传、下载、导入、导出、图片、音视频或办公文档，就自动实现统一存储适配层；不要询问负责人选择硬盘还是 OSS。读取环境档案：`local-managed` 时使用固定数据目录，`oss-gateway` 时使用文件网关。两种模式都未验证时只向管理员报告“文件存储待初始化”，不得让负责人登录阿里云、创建 RAM 或手工设置路径。
 
 ## 原生模块必须满足
@@ -79,6 +84,8 @@ GitHub 和 Coolify 不属于本 Skill 的企业模块开发、部署或更新链
 - SSO 会话必须保存灼见签发的 `pageKeys`、`actionKeys` 和 `pageAccess`。未授权路由返回 403；页面按钮和 `/api/ui/actions/*` 必须再次校验页面与 Action allowlist。
 - 页面按钮与 AI 调用同一个应用服务函数和权限判断。
 - AI 工具必须同时通过用户、企业、应用、子模块、页面、Action 和管理员授权；`aiEnabled=false` 永不暴露给 AI。
+- 用户角色允许某个 Action 不等于 AI 自动获得该 Action。AI 可调用集合必须是用户最终授权、页面 `actionKeys`、Manifest `aiEnabled=true`、管理员启用状态及平台 AI 策略的交集；平台签发一次一用、短时且绑定用户/企业/应用/模块/页面/Action/请求的凭证，模块仍须服务端复验。
+- 模块只接受固定 Action 路径，不接受请求体传入上游 URL、容器地址、数据库连接或任意路由。身份、权限和调用目标来自已验证的 Action JWT 与服务端配置，不能信任业务参数中的同名字段。
 - 查询、新增、修改、删除、审批、导出统一走 Action。修改和删除使用 `expectedVersion`；版本冲突返回 HTTP 409。
 - 高风险操作声明 `requiresConfirmation=true`，校验确认声明、参数哈希和幂等 `requestId`；拒绝、过期和重复批准不得重复执行。
 - iframe Bridge 只发送当前页面和选中实体摘要，不传 Token、Cookie、密码或整表数据；`postMessage` 禁止使用 `"*"`。
@@ -103,7 +110,7 @@ python <skill>/scripts/e2e_acceptance.py --base-url https://<模块域名> --mod
 python <skill>/scripts/publish_subsystem.py --project-path <模块项目目录> --base-url https://<模块域名>
 ```
 
-前五项验证通过、容器和 Nginx 已切换到健康版本后，最后一项通过 `POST /api/v1/ecs-publisher/modules/register` 登记当前 Git commit 并同步 Manifest。含持久文件时还必须运行 `validate_source.py --requires-file-storage` 并完成真实上传、下载、重建容器后读取及未授权访问拒绝测试；已启用 OSS 时追加 `--requires-object-storage`。首次发布和后续更新都部署同一本地 Git 仓库、同一 `applicationSlug`、域名、数据目录、存储键和接入密钥；新增子模块、页面、角色建议和 Action 默认为待授权，参与部门变化不会自动改变员工权限。
+前五项验证通过、容器和 Nginx 已切换到健康版本后，最后一项通过 `POST /api/v1/ecs-publisher/modules/register` 登记当前 Git commit 并同步 Manifest。`validate_source.py` 必须确认模块没有平台模型供应商凭证；`e2e_acceptance.py` 必须模拟平台签发合法的页面级 Action 凭证，经公开 HTTPS 域名和 Nginx 执行一次无副作用 query Action，不能用容器地址或本机端口代替。含持久文件时还必须运行 `validate_source.py --requires-file-storage` 并完成真实上传、下载、重建容器后读取及未授权访问拒绝测试；已启用 OSS 时追加 `--requires-object-storage`。首次发布和后续更新都部署同一本地 Git 仓库、同一 `applicationSlug`、域名、数据目录、存储键和接入密钥；新增子模块、页面、角色建议和 Action 默认为待授权，参与部门变化不会自动改变员工权限。
 
 环境档案声明 `requiresVpn=true`，或本轮实测只有 VPN/代理路径成功时，发布前的 SSH 复验必须复用同一条成功路径。若当前 Codex 使用本机 HTTP 代理，Banner 探测追加 `--proxy-url http://<本机地址>:<端口>`，交互式登录运行 `scripts/ssh_via_http_proxy.py`；AI 完成这些技术操作，不把代理配置或命令抛给业务负责人。实测路径与 Runtime 档案不一致时继续使用已验证路径，但在回执中要求管理员修正档案，不得重新退回必然失败的直连探测。
 
@@ -113,6 +120,7 @@ python <skill>/scripts/publish_subsystem.py --project-path <模块项目目录> 
 
 - 模板或说明歧义：修本 Skill、Schema、模板或验证脚本，再从空目录重测。
 - 平台鉴权、Manifest、页面上下文、Action、事件或自动登记缺口：修 `ai-platform` 契约和测试，再重测。
+- 平台尚未配置模型供应商、无法根据最终授权生成 AI 工具目录、无法签发 Action 凭证或无法记录调用审计：报告“平台 AI 底座待管理员处理”；不得转而把模型 Key 填进模块或让 AI 使用 SSH、数据库连接执行 CRUD。
 - DNS、HTTPS、Nginx、Docker 或服务器资源问题：修管理员初始化/直接部署流程，不把服务器特例硬编码进业务代码。
 - 本地固定数据目录、权限、磁盘阈值或备份未验证：停止含文件能力的首次发布，修管理员底座；不得写入容器可写层或公开静态目录。
 - 环境明确选择 OSS 但 Bucket、文件网关、系统前缀或签名权限未验证：停止发布或迁移，不得把 AccessKey 交给业务 AI，也不得静默改回本地模式。
