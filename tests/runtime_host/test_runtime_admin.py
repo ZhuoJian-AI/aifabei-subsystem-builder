@@ -40,6 +40,7 @@ class RuntimeHostTests(unittest.TestCase):
             runtime=root / "runtime.json",
             credential=root / "runtime-registration.key",
             apps_env=root / "apps",
+            storage_apps=root / "storage-apps",
             repositories=root / "repositories",
             deployments=root / "deployments",
             data=root / "data",
@@ -47,6 +48,7 @@ class RuntimeHostTests(unittest.TestCase):
             nginx=root / "nginx",
             acme=root / "acme",
             state=root / "run" / "storage-state.json",
+            upload_lock=root / "run" / "upload.lock",
             lock=root / "run" / "runtime.lock",
         )
 
@@ -93,6 +95,7 @@ class RuntimeHostTests(unittest.TestCase):
     def create_roots(self, paths):
         for path in (
             paths.apps_env,
+            paths.storage_apps,
             paths.repositories,
             paths.deployments,
             paths.data,
@@ -102,6 +105,8 @@ class RuntimeHostTests(unittest.TestCase):
             paths.state.parent,
         ):
             path.mkdir(parents=True, exist_ok=True)
+        paths.upload_lock.touch(exist_ok=True)
+        paths.upload_lock.chmod(0o444)
 
     def test_slug_and_management_host_validation_remain_strict(self):
         self.assertEqual(runtime_admin.validate_slug("sample-review"), "sample-review")
@@ -240,7 +245,7 @@ class RuntimeHostTests(unittest.TestCase):
             self.assertEqual(command.count("--env-file"), 2)
             self.assertIn(str(storage_env), command)
             self.assertIn("--network", command)
-            self.assertIn(runtime_admin.STORAGE_NETWORK, command)
+            self.assertIn(runtime_admin.storage_network_name("new-app"), command)
 
     def test_gateway_failure_never_forwards_cli_output(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -423,6 +428,58 @@ class RuntimeHostTests(unittest.TestCase):
         self.assertIn("不接受 --storage-mode oss", error_output.getvalue())
         call_json.assert_not_called()
 
+    def test_provisioner_rejects_sub_gib_minimum_that_host_runtime_cannot_accept(self):
+        argv = [
+            "provision_runtime.py",
+            "--organization-id",
+            "00000000-0000-4000-8000-000000000001",
+            "--runtime-key",
+            "aifabei-hk-01",
+            "--domain-suffix",
+            "aifabei.example.com",
+            "--public-address",
+            "203.0.113.10",
+            "--management-access-verified",
+            "--storage-minimum-free-gib",
+            "0.5",
+        ]
+        error_output = io.StringIO()
+        with mock.patch.object(sys, "argv", argv), mock.patch.object(
+            provision_runtime, "call_json"
+        ) as call_json, contextlib.redirect_stderr(error_output), self.assertRaises(
+            SystemExit
+        ):
+            provision_runtime.main()
+
+        self.assertIn("invalid int value", error_output.getvalue())
+        call_json.assert_not_called()
+
+    def test_provisioner_rejects_fractional_minimum_instead_of_truncating_it(self):
+        argv = [
+            "provision_runtime.py",
+            "--organization-id",
+            "00000000-0000-4000-8000-000000000001",
+            "--runtime-key",
+            "aifabei-hk-01",
+            "--domain-suffix",
+            "aifabei.example.com",
+            "--public-address",
+            "203.0.113.10",
+            "--management-access-verified",
+            "--storage-minimum-free-gib",
+            "5.9",
+        ]
+        error_output = io.StringIO()
+        with mock.patch.object(sys, "argv", argv), mock.patch.object(
+            provision_runtime, "call_json"
+        ) as call_json, contextlib.redirect_stderr(error_output), self.assertRaises(
+            SystemExit
+        ):
+            provision_runtime.main()
+
+        self.assertIn("invalid int value", error_output.getvalue())
+        call_json.assert_not_called()
+
     def test_initial_provision_stays_local_until_gateway_probe(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -451,6 +508,8 @@ class RuntimeHostTests(unittest.TestCase):
                 "203.0.113.10",
                 "--management-access-verified",
                 "--storage-verified",
+                "--local-storage-root",
+                str(root),
                 "--profile-out",
                 str(profile_out),
                 "--credential-out",
@@ -459,6 +518,8 @@ class RuntimeHostTests(unittest.TestCase):
             output = io.StringIO()
             with mock.patch.object(sys, "argv", argv), mock.patch.dict(
                 os.environ, {"ZHUOJIAN_ADMIN_TOKEN": "admin-session"}, clear=False
+            ), mock.patch.object(
+                provision_runtime, "LOCAL_STORAGE_ROOT", root
             ), mock.patch.object(
                 provision_runtime, "call_json", return_value=response
             ), contextlib.redirect_stdout(output):
@@ -469,6 +530,108 @@ class RuntimeHostTests(unittest.TestCase):
             self.assertFalse(profile["capabilities"]["objectStorage"])
             self.assertNotIn("objectStorage", profile)
             self.assertNotIn("one-time-publisher-value", output.getvalue())
+
+    def test_provisioner_preflights_private_outputs_before_api_call(self):
+        argv = [
+            "provision_runtime.py",
+            "--organization-id",
+            "00000000-0000-4000-8000-000000000001",
+            "--runtime-key",
+            "aifabei-hk-01",
+            "--domain-suffix",
+            "aifabei.example.com",
+            "--public-address",
+            "203.0.113.10",
+            "--management-access-verified",
+        ]
+        with mock.patch.object(sys, "argv", argv), mock.patch.dict(
+            os.environ, {"ZHUOJIAN_ADMIN_TOKEN": "admin-session"}, clear=False
+        ), mock.patch.object(
+            provision_runtime,
+            "_preflight_output",
+            side_effect=PermissionError("unsafe parent"),
+        ), mock.patch.object(provision_runtime, "call_json") as call_json:
+            with self.assertRaises(SystemExit) as caught:
+                provision_runtime.main()
+        self.assertIn("输出位置预检失败", str(caught.exception))
+        call_json.assert_not_called()
+
+    def test_provisioner_rejects_same_profile_and_credential_path_before_api(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = str(Path(directory) / "runtime-output")
+            argv = [
+                "provision_runtime.py",
+                "--organization-id",
+                "00000000-0000-4000-8000-000000000001",
+                "--runtime-key",
+                "aifabei-hk-01",
+                "--domain-suffix",
+                "aifabei.example.com",
+                "--public-address",
+                "203.0.113.10",
+                "--management-access-verified",
+                "--profile-out",
+                target,
+                "--credential-out",
+                target,
+            ]
+            with mock.patch.object(sys, "argv", argv), mock.patch.object(
+                provision_runtime, "call_json"
+            ) as call_json, self.assertRaises(SystemExit):
+                provision_runtime.main()
+            call_json.assert_not_called()
+
+    def test_local_storage_probe_is_reversible(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            provision_runtime.verify_local_storage(root, 0.000001)
+            self.assertEqual(list(root.iterdir()), [])
+
+    def test_local_storage_probe_cleans_up_after_read_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            original_read_text = Path.read_text
+
+            def fail_probe_read(path, *args, **kwargs):
+                if path.name == "probe.txt":
+                    raise OSError("simulated read failure")
+                return original_read_text(path, *args, **kwargs)
+
+            with mock.patch.object(Path, "read_text", fail_probe_read):
+                with self.assertRaises(OSError):
+                    provision_runtime.verify_local_storage(root, 0.000001)
+            self.assertEqual(list(root.iterdir()), [])
+
+    def test_provisioner_rejects_storage_root_different_from_host_runtime(self):
+        with tempfile.TemporaryDirectory() as directory:
+            argv = [
+                "provision_runtime.py",
+                "--organization-id",
+                "00000000-0000-4000-8000-000000000001",
+                "--runtime-key",
+                "aifabei-hk-01",
+                "--domain-suffix",
+                "aifabei.example.com",
+                "--public-address",
+                "203.0.113.10",
+                "--management-access-verified",
+                "--local-storage-root",
+                directory,
+            ]
+            with mock.patch.object(sys, "argv", argv), mock.patch.object(
+                provision_runtime, "call_json"
+            ) as call_json, self.assertRaises(SystemExit):
+                provision_runtime.main()
+            call_json.assert_not_called()
+
+    @unittest.skipIf(os.name == "nt", "POSIX ownership and mode semantics")
+    def test_secure_write_rejects_weak_existing_parent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory) / "weak"
+            parent.mkdir(mode=0o755)
+            os.chmod(parent, 0o755)
+            with self.assertRaises(PermissionError):
+                provision_runtime.secure_write(parent / "secret", "value\n")
 
 
 if __name__ == "__main__":

@@ -30,7 +30,7 @@ python "<skill>/scripts/validate_ssh_access.py" --host <ECS公网地址> --ports
 探测返回 `selectedPort` 后，透明 VPN 使用标准 SSH。首次见到主机时自动记录新主机密钥；若已记录的密钥后来发生变化则停止，并交给管理员核对服务器身份：
 
 ```text
-ssh -o StrictHostKeyChecking=accept-new -p <selectedPort> root@<ECS公网地址>
+ssh -o StrictHostKeyChecking=accept-new -o PasswordAuthentication=yes -o KbdInteractiveAuthentication=yes -o PreferredAuthentications=password,keyboard-interactive -o PubkeyAuthentication=no -o NumberOfPasswordPrompts=1 -p <selectedPort> root@<ECS公网地址>
 ```
 
 本机 HTTP 代理使用以下封装脚本，避免业务 AI 自己拼接含空格或中文路径的 `ProxyCommand`：
@@ -39,7 +39,7 @@ ssh -o StrictHostKeyChecking=accept-new -p <selectedPort> root@<ECS公网地址>
 python "<skill>/scripts/ssh_via_http_proxy.py" --proxy-url http://127.0.0.1:7897 --host <ECS公网地址> --port <selectedPort>
 ```
 
-启动带 PTY 的 SSH，等真正出现密码提示后，再通过标准输入提交本次对话提供的密码。不要在 Banner 探测阶段使用密码。
+两个登录入口都显式禁用公钥尝试并优先密码/键盘交互，避免本机 SSH 配置或大量 Agent 密钥在密码提示前耗尽认证次数。启动带 PTY 的 SSH，等真正出现密码提示后，再通过标准输入提交本次任务里用户提供的密码。Banner 探测只发送公开的 SSH 协议标识来帮助 `sslh` 立即分流，不发送账号或密码；不得把密码拼进命令参数、脚本、临时文件、环境变量、Git、日志或回复，任务结束后也不另行保存。
 
 本轮登录实测需要代理、但 Runtime 档案仍写 `requiresVpn=false` 时，继续复用已经成功的代理路径完成工作，并在管理员回执中标记档案需要修正；不得因档案过时而重新退回失败的直连路径。
 

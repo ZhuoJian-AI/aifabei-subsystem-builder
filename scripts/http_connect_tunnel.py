@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import ipaddress
+import os
 import re
 import socket
 import sys
@@ -104,9 +105,12 @@ def open_http_connect_tunnel(
 
 def _stdin_to_socket(sock: socket.socket) -> None:
     try:
-        read_stdin = getattr(sys.stdin.buffer, "read1", sys.stdin.buffer.read)
+        descriptor = sys.stdin.fileno()
         while True:
-            chunk = read_stdin(65536)
+            # Read the OS descriptor directly.  A daemon thread blocked on
+            # BufferedReader can otherwise hold its internal lock while the
+            # Python interpreter is finalising after scp/sftp exits on Windows.
+            chunk = os.read(descriptor, 65536)
             if not chunk:
                 break
             sock.sendall(chunk)
@@ -125,18 +129,24 @@ def relay_stdio(sock: socket.socket, pending: bytes = b"") -> None:
     sender.start()
     try:
         if pending:
-            sys.stdout.buffer.write(pending)
-            sys.stdout.buffer.flush()
+            _write_stdout(pending)
         while True:
             chunk = sock.recv(65536)
             if not chunk:
                 break
-            sys.stdout.buffer.write(chunk)
-            sys.stdout.buffer.flush()
+            _write_stdout(chunk)
     except (BrokenPipeError, OSError):
         pass
     finally:
         sock.close()
+
+
+def _write_stdout(content: bytes) -> None:
+    descriptor = sys.stdout.fileno()
+    view = memoryview(content)
+    while view:
+        written = os.write(descriptor, view)
+        view = view[written:]
 
 
 def main() -> int:

@@ -7,6 +7,8 @@ import argparse
 import json
 import os
 import re
+import secrets
+import shutil
 import stat
 from pathlib import Path, PurePosixPath
 from urllib.error import HTTPError, URLError
@@ -16,6 +18,7 @@ from urllib.request import Request, urlopen
 
 STORAGE_GATEWAY_URL = "http://zhuojian-storage-gateway:8080"
 STORAGE_CREDENTIAL_REF = Path("/etc/zhuojian/oss-gateway.env")
+LOCAL_STORAGE_ROOT = Path("/srv/zhuojian/data")
 
 
 def call_json(url: str, token: str, body: dict) -> dict:
@@ -42,17 +45,126 @@ def call_json(url: str, token: str, body: dict) -> dict:
 
 
 def secure_write(path: Path, content: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    _prepare_private_parent(path.parent)
+    if path.exists() or path.is_symlink():
+        raise FileExistsError(f"refusing to replace existing file: {path}")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
     descriptor = os.open(path, flags, stat.S_IRUSR | stat.S_IWUSR)
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
             handle.write(content)
-    except OSError:
+            handle.flush()
+            os.fsync(handle.fileno())
+        if os.name != "nt":
+            os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
+            metadata = path.stat()
+            if metadata.st_uid != os.geteuid() or stat.S_IMODE(metadata.st_mode) != 0o600:
+                raise PermissionError(f"private output metadata is unsafe: {path}")
+        _fsync_directory(path.parent)
+    except BaseException:
         path.unlink(missing_ok=True)
         raise
+
+
+def _prepare_private_parent(path: Path) -> None:
+    """Create or verify a private output directory without following its leaf."""
+
+    if path.exists() or path.is_symlink():
+        if path.is_symlink() or not path.is_dir():
+            raise PermissionError(f"private output parent is unsafe: {path}")
+    else:
+        path.mkdir(parents=True, mode=0o700)
+    if os.name == "nt":
+        return
+    metadata = path.stat()
+    if metadata.st_uid != os.geteuid():
+        raise PermissionError(f"private output parent has an unexpected owner: {path}")
+    mode = stat.S_IMODE(metadata.st_mode)
+    if mode != 0o700:
+        managed_default = os.geteuid() == 0 and path == Path("/etc/zhuojian")
+        if not managed_default:
+            raise PermissionError(f"private output parent must have mode 0700: {path}")
+        os.chmod(path, 0o700)
+
+
+def _preflight_output(path: Path) -> None:
+    _prepare_private_parent(path.parent)
+    if path.exists() or path.is_symlink():
+        raise FileExistsError(f"refusing to replace existing file: {path}")
+    probe = path.parent / f".zhuojian-provision-write-{secrets.token_hex(8)}"
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(probe, flags, 0o600)
+    try:
+        os.write(descriptor, b"preflight\n")
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+        probe.unlink(missing_ok=True)
+        _fsync_directory(path.parent)
+
+
+def _fsync_directory(path: Path) -> None:
+    if os.name == "nt":
+        return
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def verify_local_storage(root: Path, minimum_free_gib: int) -> None:
+    """Perform a reversible real write/read/delete and disk-capacity probe."""
+
+    if root.exists() or root.is_symlink():
+        if root.is_symlink() or not root.is_dir():
+            raise SystemExit(f"本地文件根目录不存在或不安全: {root}")
+    else:
+        try:
+            root.mkdir(parents=True, mode=0o750)
+            if os.name != "nt":
+                os.chmod(root, 0o750)
+        except OSError as exc:
+            raise SystemExit(f"无法建立本地文件根目录: {root}: {exc}") from exc
     if os.name != "nt":
-        os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
+        metadata = root.stat()
+        if metadata.st_uid != os.geteuid() or stat.S_IMODE(metadata.st_mode) & 0o022:
+            raise SystemExit(f"本地文件根目录必须由当前管理员拥有且不可被组/其他用户写入: {root}")
+    minimum_bytes = int(minimum_free_gib * 1024**3)
+    if shutil.disk_usage(root).free < minimum_bytes:
+        raise SystemExit("本地文件根目录的可用空间低于配置的最小余量")
+
+    run_id = secrets.token_hex(8)
+    first = root / f".zhuojian-storage-probe-a-{run_id}"
+    second = root / f".zhuojian-storage-probe-b-{run_id}"
+    payload = f"alphabet-local-storage:{run_id}\n"
+    created: list[Path] = []
+    probe_file = first / "probe.txt"
+    try:
+        first.mkdir(mode=0o700)
+        created.append(first)
+        second.mkdir(mode=0o700)
+        created.append(second)
+        secure_write(probe_file, payload)
+        if probe_file.read_text(encoding="utf-8") != payload:
+            raise SystemExit("本地文件写入后读取校验失败")
+        if (second / "probe.txt").exists():
+            raise SystemExit("本地文件测试目录发生串用")
+        probe_file.unlink()
+        _fsync_directory(first)
+    finally:
+        if first in created and (probe_file.exists() or probe_file.is_symlink()):
+            if probe_file.is_symlink() or not probe_file.is_file():
+                raise SystemExit(f"本地文件验收资源不是普通文件: {probe_file}")
+            probe_file.unlink()
+            _fsync_directory(first)
+        for candidate in reversed(created):
+            try:
+                candidate.rmdir()
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                raise SystemExit(f"本地文件验收资源无法安全清理: {candidate}") from exc
 
 
 def _https_platform(value: str) -> str:
@@ -113,6 +225,10 @@ def _management_host(value: str) -> str:
     return value
 
 
+def _is_absolute_path(path: Path) -> bool:
+    return path.is_absolute() or PurePosixPath(path.as_posix()).is_absolute()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="管理员为一台企业 ECS 签发最小权限 Runtime 登记凭证"
@@ -164,11 +280,12 @@ def main() -> int:
     parser.add_argument(
         "--local-storage-root",
         type=Path,
-        default=Path("/srv/zhuojian/data"),
+        default=LOCAL_STORAGE_ROOT,
+        help="固定为 /srv/zhuojian/data，必须与主机 Runtime 的实际挂载根一致",
     )
     parser.add_argument("--storage-warning-used-percent", type=int, default=80)
     parser.add_argument("--storage-stop-upload-used-percent", type=int, default=90)
-    parser.add_argument("--storage-minimum-free-gib", type=float, default=5)
+    parser.add_argument("--storage-minimum-free-gib", type=int, default=5)
     parser.add_argument("--storage-bucket", type=_storage_bucket)
     parser.add_argument("--storage-region", type=_storage_region)
     parser.add_argument(
@@ -179,8 +296,7 @@ def main() -> int:
     parser.add_argument(
         "--storage-verified",
         action="store_true",
-        required=True,
-        help="仅在管理员已完成真实上传、下载和跨系统隔离验收后传入",
+        help="兼容旧命令；本地目录现在始终由脚本真实写入、读取、删除后才标记 verified",
     )
     parser.add_argument(
         "--storage-credential-ref",
@@ -200,13 +316,15 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    if not PurePosixPath(args.local_storage_root.as_posix()).is_absolute():
+    if not _is_absolute_path(args.local_storage_root):
         parser.error("--local-storage-root 必须是绝对路径")
+    if args.local_storage_root != LOCAL_STORAGE_ROOT:
+        parser.error("--local-storage-root 固定为 /srv/zhuojian/data，不能验证一处再写入另一处")
     if not 1 <= args.storage_warning_used_percent < args.storage_stop_upload_used_percent < 100:
         parser.error("磁盘阈值必须满足 1 <= warning < stop < 100")
-    if args.storage_minimum_free_gib <= 0:
-        parser.error("--storage-minimum-free-gib 必须大于 0")
-    if not PurePosixPath(args.storage_credential_ref.as_posix()).is_absolute():
+    if args.storage_minimum_free_gib < 1:
+        parser.error("--storage-minimum-free-gib 必须大于或等于 1")
+    if not _is_absolute_path(args.storage_credential_ref):
         parser.error("--storage-credential-ref 必须是绝对路径")
     management_host = args.management_access_host or args.public_address
     if not management_host:
@@ -214,6 +332,8 @@ def main() -> int:
             "必须提供 --public-address 或 --management-access-host，"
             "用于业务 AI 的 SSH 入口"
         )
+    if args.profile_out.resolve(strict=False) == args.credential_out.resolve(strict=False):
+        parser.error("--profile-out 与 --credential-out 必须是两个不同文件")
     if args.storage_mode == "oss":
         parser.error(
             "初始 Runtime 登记不接受 --storage-mode oss。先以 local 完成登记，"
@@ -225,8 +345,13 @@ def main() -> int:
     if not admin_token:
         raise SystemExit(f"管理员 Token 必须通过环境变量 {args.admin_token_env} 提供")
     for output in (args.profile_out, args.credential_out):
-        if output.exists():
-            raise SystemExit(f"拒绝覆盖已有文件: {output}")
+        if not _is_absolute_path(output):
+            parser.error("--profile-out 和 --credential-out 必须是绝对路径")
+        try:
+            _preflight_output(output)
+        except (OSError, PermissionError) as exc:
+            raise SystemExit(f"输出位置预检失败: {output}: {exc}") from exc
+    verify_local_storage(args.local_storage_root, args.storage_minimum_free_gib)
 
     endpoint = (
         f"{args.platform_url}/api/v1/ecs-publisher/organizations/"
@@ -283,7 +408,7 @@ def main() -> int:
         "warningUsedPercent": args.storage_warning_used_percent,
         "stopUploadUsedPercent": args.storage_stop_upload_used_percent,
         "minimumFreeGiB": args.storage_minimum_free_gib,
-        "verified": args.storage_verified,
+        "verified": True,
     }
     profile.pop("objectStorage", None)
     secret_refs = profile.setdefault("secretRefs", [])
@@ -300,7 +425,8 @@ def main() -> int:
     except OSError:
         raise SystemExit(
             f"环境档案写入失败；Runtime 凭证已安全保存在 {args.credential_out}，"
-            "不要重新签发，请修复目录权限后手工保存本次档案。"
+            "不要再次创建 Runtime。请修复目录权限，用管理员会话按 runtime_key "
+            "查询已建 Runtime，并通过查询返回的档案和一次凭证轮换完成恢复。"
         )
 
     print(

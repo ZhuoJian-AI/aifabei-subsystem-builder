@@ -5,6 +5,7 @@ services:
     image: zhuojian/storage-gateway:local
     container_name: zhuojian-storage-gateway
     restart: unless-stopped
+    read_only: true
     cap_drop:
       - ALL
     security_opt:
@@ -12,18 +13,21 @@ services:
     environment:
       GATEWAY_DB_PATH: /var/lib/zhuojian-storage-gateway/registry.sqlite3
       GATEWAY_ROOT_PREFIX: apps
-      GATEWAY_APPS_ENV_DIR: /etc/zhuojian/apps
+      GATEWAY_APPS_ENV_DIR: /etc/zhuojian/storage-apps
       GATEWAY_INTERNAL_URL: http://zhuojian-storage-gateway:8080
       GATEWAY_MAX_UPLOAD_BYTES: 536870912
       GATEWAY_SPOOL_DIR: /var/lib/zhuojian-storage-gateway/tmp
       GATEWAY_MINIMUM_FREE_BYTES: 5368709120
+      GATEWAY_MAX_CONCURRENT_UPLOADS: 2
       OSS_SECRETS_FILE: /run/secrets/zhuojian-oss-gateway.env
     volumes:
       - /var/lib/zhuojian-storage-gateway:/var/lib/zhuojian-storage-gateway
-      - /etc/zhuojian/apps:/etc/zhuojian/apps
+      - /etc/zhuojian/storage-apps:/etc/zhuojian/storage-apps
       - /etc/zhuojian/oss-gateway.env:/run/secrets/zhuojian-oss-gateway.env:ro
     networks:
       - storage
+    tmpfs:
+      - /tmp:size=16777216,mode=1777
     healthcheck:
       test:
         - CMD

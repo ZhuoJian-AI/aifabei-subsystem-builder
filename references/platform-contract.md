@@ -1,4 +1,4 @@
-# 灼见原生模块接入协议 v2.4
+# 灼见原生模块接入协议 v2.5
 
 `version` 始终是整数 `2`；兼容增强写入字符串 `contractRevision`。平台必须兼容没有 `contractRevision` 和 `pages` 的 v2.0 模块。
 
@@ -52,7 +52,7 @@ ECS 管理员只需在 Runtime 初始化时建立通配域名、HTTPS `443` 和 
 {
   "protocol": "zhuojian-subsystem",
   "version": 2,
-  "contractRevision": "2.4",
+  "contractRevision": "2.5",
   "enterprise": {"key": "aifabei", "name": "Alphabet"},
   "applicationSlug": "sample-review",
   "applicationName": "样品评审系统",
@@ -114,7 +114,7 @@ applicationSlug
       └─ actionKey: query/create/update/delete/export/approve
 ```
 
-员工最终权限是全部启用角色权限树的并集。`departments[].role=owner` 仅表示该部门负责需求、开发验收或变更确认，不能替代平台角色授权。页面 `view` 与 Action 分开：看见页面不表示能修改数据，也不表示 AI 可以调用页面中的 Action。旧系统没有 v2.4 Manifest 时可以继续按整站 iframe 兼容授权，但必须在管理员界面标记为兼容模式。
+员工最终权限是全部启用角色权限树的并集。`departments[].role=owner` 仅表示该部门负责需求、开发验收或变更确认，不能替代平台角色授权。页面 `view` 与 Action 分开：看见页面不表示能修改数据，也不表示 AI 可以调用页面中的 Action。旧系统没有 v2.5 Manifest 时可以继续按整站 iframe 兼容授权，但必须在管理员界面标记为兼容模式。
 
 ## 双层鉴权
 
@@ -122,7 +122,7 @@ applicationSlug
 
 灼见先检查 `moduleKey` 的 `view` 权限，再签发 `typ=zhuojian-sso` 短票据。模块验证签名、`iss=zhuojian-saas`、`aud=applicationSlug`、`typ`、`exp`、企业、用户、`moduleKey`、权限和一次性 `jti`。`redirect` 必须是站内相对路径且命中获授权页面。成功后建立 `HttpOnly; Secure; SameSite=Lax` 会话并 302 到不含票据的页面。
 
-v2.4 SSO 票据还必须包含管理员基于平台角色计算出的最终页面和操作 allowlist，模块不得用 Manifest 的部门责任或 `accessRoles` 建议值替代平台最终授权：
+v2.5 SSO 票据还必须包含管理员基于平台角色计算出的最终页面和操作 allowlist，模块不得用 Manifest 的部门责任或 `accessRoles` 建议值替代平台最终授权：
 
 ```json
 {
@@ -224,4 +224,4 @@ SaaS 向目标模块投递时使用 `typ=zhuojian-event` JWT，并 POST：
 }
 ```
 
-目标模块按 `eventId`/`deliveryId` 幂等消费，返回已接受或已处理状态；不得因为重复投递重复创建业务记录。
+事件 JWT 必须绑定 `deliveryId/eventId/eventType/targetModuleKey`；若 JWT 还带 `sourceApplicationSlug`，它必须与请求体完全一致。目标模块只接受目标 `moduleKey` 在 Manifest `events.subscribes[]` 中明确订阅的 `eventType`，并再次核验企业标识、字段格式和带时区时间。目标模块按完整请求哈希同时绑定 `eventId` 与 `deliveryId`：完全相同的重复投递返回已处理状态，任一 ID 被复用于不同内容时返回 409，不得重复创建业务记录或静默接受冲突。

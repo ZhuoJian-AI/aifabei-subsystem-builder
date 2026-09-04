@@ -66,7 +66,18 @@ def main() -> int:
         parser.error(f"输出目录不是空目录：{output}")
     template = Path(__file__).resolve().parents[1] / "assets" / "native-subsystem-template"
     output.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(template, output, dirs_exist_ok=True)
+    shutil.copytree(
+        template,
+        output,
+        dirs_exist_ok=True,
+        ignore=shutil.ignore_patterns(
+            "__pycache__",
+            "*.pyc",
+            ".pytest_cache",
+            ".mypy_cache",
+            ".ruff_cache",
+        ),
+    )
 
     actions = [
         ("query", False), ("create", False), ("update", False), ("delete", True),
@@ -105,7 +116,7 @@ def main() -> int:
     config = {
         "protocol": "zhuojian-subsystem",
         "version": 2,
-        "contractRevision": "2.4",
+        "contractRevision": "2.5",
         "enterprise": {"key": company_slug, "name": args.company_name.strip()},
         "applicationSlug": application_slug,
         "applicationName": args.application_name.strip(),

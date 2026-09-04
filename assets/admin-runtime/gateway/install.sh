@@ -9,17 +9,21 @@ INSTALL_DIR=/opt/zhuojian/storage-gateway
 MANAGED_MARKER=$INSTALL_DIR/.zhuojian-storage-gateway-managed
 MARKER_VALUE=zhuojian-storage-gateway-installer-v1
 SECRETS_FILE=/etc/zhuojian/oss-gateway.env
-APPS_ENV_DIR=/etc/zhuojian/apps
+APPS_ENV_DIR=/etc/zhuojian/storage-apps
 STATE_DIR=/var/lib/zhuojian-storage-gateway
 WRAPPER_PATH=/usr/local/sbin/zhuojian-storage-gateway-admin
 COMPOSE_PROJECT=zhuojian-storage-gateway
 COMPOSE_SERVICE=zhuojian-storage-gateway
 CONTAINER_NAME=zhuojian-storage-gateway
 NETWORK_NAME=zhuojian-storage
+APPLICATION_NETWORK_PREFIX=zhuojian-storage-
+APPLICATION_NETWORK_ROLE=application-storage
+RUNTIME_NETWORK_MANAGER=zhuojian-runtime-admin/v1
 IMAGE_NAME=zhuojian/storage-gateway:local
 STATE_MARKER=$STATE_DIR/.zhuojian-storage-gateway-managed
 LOCK_DIR=/run/zhuojian-storage-gateway-installer
 LOCK_FILE=$LOCK_DIR/install.lock
+RUNTIME_LOCK_FILE=/run/lock/zhuojian-runtime-admin.lock
 
 die() {
     echo "$1" >&2
@@ -30,7 +34,7 @@ die() {
 
 SOURCE_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 
-for required_command in chmod chown cmp dirname docker find flock grep id install mktemp rm sleep stat; do
+for required_command in chmod chown cmp dirname docker find flock grep id install mktemp python3 rm sleep stat; do
     command -v "$required_command" >/dev/null 2>&1 || \
         die "required command is missing: $required_command"
 done
@@ -56,6 +60,17 @@ fi
 exec 9<>"$LOCK_FILE"
 flock -n 9 || die "another storage gateway installation is already running"
 
+if [ -e "$RUNTIME_LOCK_FILE" ] || [ -L "$RUNTIME_LOCK_FILE" ]; then
+    [ -f "$RUNTIME_LOCK_FILE" ] && [ ! -L "$RUNTIME_LOCK_FILE" ] || \
+        die "refusing unsafe Runtime operation lock"
+    [ "$(stat -c '%u:%g:%a' -- "$RUNTIME_LOCK_FILE")" = "0:0:600" ] || \
+        die "Runtime operation lock must already be root:root mode 0600"
+else
+    install -o root -g root -m 0600 /dev/null "$RUNTIME_LOCK_FILE"
+fi
+exec 8<>"$RUNTIME_LOCK_FILE"
+flock -n 8 || die "a Runtime deployment or storage operation is already running"
+
 docker compose version >/dev/null 2>&1 || die "Docker Compose v2 is required"
 docker info >/dev/null 2>&1 || die "the Docker daemon is unavailable"
 
@@ -74,6 +89,7 @@ for required_asset in \
     requirements.txt \
     install.sh \
     bin/zhuojian-storage-gateway-admin \
+    scripts/migrate_legacy_storage_envs.py \
     src/zhuojian_storage_gateway/__init__.py \
     src/zhuojian_storage_gateway/app.py \
     src/zhuojian_storage_gateway/cli.py \
@@ -127,7 +143,7 @@ check_root_directory /usr/local
 check_root_directory /usr/local/sbin
 check_root_directory /etc
 check_root_directory /etc/zhuojian
-check_root_directory /etc/zhuojian/apps
+check_root_directory /etc/zhuojian/storage-apps
 check_root_directory /var/lib
 
 WAS_MANAGED=0
@@ -158,7 +174,7 @@ if [ "$WAS_MANAGED" -eq 1 ]; then
     if ! find "$INSTALL_DIR" -mindepth 1 -print | while IFS= read -r managed_path; do
         managed_relative=${managed_path#"$INSTALL_DIR"/}
         case "$managed_relative" in
-            .dockerignore|.zhuojian-storage-gateway-managed|Dockerfile|README.md|compose.yaml|pyproject.toml|requirements.txt|install.sh|bin|bin/zhuojian-storage-gateway-admin|src|src/zhuojian_storage_gateway|src/zhuojian_storage_gateway/__init__.py|src/zhuojian_storage_gateway/app.py|src/zhuojian_storage_gateway/cli.py|src/zhuojian_storage_gateway/config.py|src/zhuojian_storage_gateway/registry.py|src/zhuojian_storage_gateway/storage.py)
+            .dockerignore|.zhuojian-storage-gateway-managed|Dockerfile|README.md|compose.yaml|pyproject.toml|requirements.txt|install.sh|bin|bin/zhuojian-storage-gateway-admin|scripts|scripts/migrate_legacy_storage_envs.py|src|src/zhuojian_storage_gateway|src/zhuojian_storage_gateway/__init__.py|src/zhuojian_storage_gateway/app.py|src/zhuojian_storage_gateway/cli.py|src/zhuojian_storage_gateway/config.py|src/zhuojian_storage_gateway/registry.py|src/zhuojian_storage_gateway/storage.py)
                 ;;
             *) exit 1 ;;
         esac
@@ -226,6 +242,81 @@ if docker network inspect "$NETWORK_NAME" >/dev/null 2>&1; then
         die "refusing to use an unknown Docker network named $NETWORK_NAME"
 fi
 
+list_application_networks() {
+    docker network ls \
+        --filter "label=com.zhuojian.network-role=$APPLICATION_NETWORK_ROLE" \
+        --format '{{.Name}}'
+}
+
+validate_application_network() {
+    van_name=$1
+    van_managed=$(docker network inspect --format \
+        '{{ index .Labels "com.zhuojian.managed-by" }}' "$van_name" 2>/dev/null) || return 1
+    van_role=$(docker network inspect --format \
+        '{{ index .Labels "com.zhuojian.network-role" }}' "$van_name" 2>/dev/null) || return 1
+    van_application=$(docker network inspect --format \
+        '{{ index .Labels "com.zhuojian.application" }}' "$van_name" 2>/dev/null) || return 1
+    van_enterprise=$(docker network inspect --format \
+        '{{ index .Labels "com.zhuojian.enterprise" }}' "$van_name" 2>/dev/null) || return 1
+    van_driver_scope=$(docker network inspect --format \
+        '{{.Driver}}|{{.Scope}}' "$van_name" 2>/dev/null) || return 1
+    [ "$van_managed" = "$RUNTIME_NETWORK_MANAGER" ] && \
+    [ "$van_role" = "$APPLICATION_NETWORK_ROLE" ] && \
+    [ "$van_name" = "$APPLICATION_NETWORK_PREFIX$van_application" ] && \
+    [ "$van_driver_scope" = "bridge|local" ] || return 1
+    printf '%s\n' "$van_application" | grep -Eq '^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$' || return 1
+    printf '%s\n' "$van_enterprise" | grep -Eq '^[a-z0-9]([a-z0-9-]*[a-z0-9])?$' || return 1
+    van_expected_app=zhuojian-$van_enterprise-$van_application
+    van_members=$(docker network inspect --format \
+        '{{range .Containers}}{{println .Name}}{{end}}' "$van_name" 2>/dev/null) || return 1
+    for van_member in $van_members; do
+        case "$van_member" in
+            "$CONTAINER_NAME"|"$van_expected_app")
+                ;;
+            "$van_expected_app"-rollback-*)
+                # Runtime updates may leave a stopped rollback container when
+                # their best-effort post-commit cleanup fails.  The installer
+                # holds the Runtime lock, so an exact, stopped, managed member
+                # is safe to retain while the gateway is recreated.  A running,
+                # unlabeled or cross-application lookalike remains a hard fail.
+                van_rollback_identity=$(docker container inspect --format \
+                    '{{ index .Config.Labels "com.zhuojian.managed-by" }}|{{ index .Config.Labels "com.zhuojian.application" }}|{{ index .Config.Labels "com.zhuojian.enterprise" }}|{{.State.Running}}' \
+                    "$van_member" 2>/dev/null) || return 1
+                [ "$van_rollback_identity" = \
+                    "$RUNTIME_NETWORK_MANAGER|$van_application|$van_enterprise|false" ] || return 1
+                ;;
+            *)
+                return 1
+                ;;
+        esac
+    done
+}
+
+preflight_application_networks() {
+    pan_networks=$(list_application_networks) || \
+        die "failed to enumerate managed application storage networks"
+    for pan_name in $pan_networks; do
+        validate_application_network "$pan_name" || \
+            die "refusing an untrusted application storage network: $pan_name"
+    done
+}
+
+reattach_application_networks() {
+    ran_networks=$(list_application_networks) || return 1
+    for ran_name in $ran_networks; do
+        validate_application_network "$ran_name" || return 1
+        if ! docker network inspect --format \
+            '{{range .Containers}}{{println .Name}}{{end}}' "$ran_name" | \
+            grep -Fxq "$CONTAINER_NAME"; then
+            docker network connect --alias "$CONTAINER_NAME" \
+                "$ran_name" "$CONTAINER_NAME" >/dev/null 2>&1 || return 1
+        fi
+        validate_application_network "$ran_name" || return 1
+    done
+}
+
+preflight_application_networks
+
 if docker image inspect "$IMAGE_NAME" >/dev/null 2>&1; then
     image_project=$(docker image inspect --format \
         '{{ index .Config.Labels "com.docker.compose.project" }}' "$IMAGE_NAME")
@@ -286,8 +377,128 @@ ensure_install_directory() {
 }
 
 ensure_install_directory "$INSTALL_DIR/bin"
+ensure_install_directory "$INSTALL_DIR/scripts"
 ensure_install_directory "$INSTALL_DIR/src"
 ensure_install_directory "$INSTALL_DIR/src/zhuojian_storage_gateway"
+
+# Compose configuration is part of a runnable gateway release.  Keep the exact
+# previous managed file outside INSTALL_DIR before installing a new bundle so a
+# failed cross-version upgrade can recreate the old image with its old mounts
+# and env paths, not with the just-installed configuration.
+ROLLBACK_CONFIG_DIR=
+PREVIOUS_COMPOSE_FILE=
+INSTALL_COMPLETED=0
+IMAGE_BUILD_STARTED=0
+CONTAINER_SWITCH_STARTED=0
+CONTAINER_ROLLBACK_DONE=0
+MIGRATION_STARTED=0
+
+restore_compose_baseline() {
+    [ -n "$PREVIOUS_COMPOSE_FILE" ] && [ -f "$PREVIOUS_COMPOSE_FILE" ] || return 0
+    restored_compose_tmp=$(mktemp "$INSTALL_DIR/.compose.rollback.XXXXXX") || return 1
+    if ! install -o root -g root -m 0644 \
+        "$PREVIOUS_COMPOSE_FILE" "$restored_compose_tmp"; then
+        rm -f -- "$restored_compose_tmp"
+        return 1
+    fi
+    if ! mv -f -- "$restored_compose_tmp" "$INSTALL_DIR/compose.yaml"; then
+        rm -f -- "$restored_compose_tmp"
+        return 1
+    fi
+}
+
+discard_rollback_config() {
+    if [ -n "$ROLLBACK_CONFIG_DIR" ]; then
+        rm -f -- "$ROLLBACK_CONFIG_DIR/compose.yaml"
+        rmdir -- "$ROLLBACK_CONFIG_DIR" 2>/dev/null || true
+        ROLLBACK_CONFIG_DIR=
+        PREVIOUS_COMPOSE_FILE=
+    fi
+}
+
+gateway_current_healthy() {
+    [ "$(docker container inspect --format \
+        '{{.State.Status}}/{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' \
+        "$CONTAINER_NAME" 2>/dev/null || true)" = "running/healthy" ] && \
+    docker exec "$CONTAINER_NAME" \
+        python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=3).read()" \
+        >/dev/null 2>&1
+}
+
+restore_previous_image_tag() {
+    [ "$IMAGE_BUILD_STARTED" -eq 1 ] || return 0
+    [ -n "$previous_tag_image_id" ] || {
+        IMAGE_BUILD_STARTED=0
+        return 0
+    }
+    docker image inspect "$previous_tag_image_id" >/dev/null 2>&1 || return 1
+    docker image tag "$previous_tag_image_id" "$IMAGE_NAME" >/dev/null 2>&1 || return 1
+    IMAGE_BUILD_STARTED=0
+}
+
+rollback_interrupted_install() {
+    [ "$INSTALL_COMPLETED" -ne 1 ] || return 0
+    if [ "$MIGRATION_STARTED" -eq 1 ]; then
+        # A normal signal may have interrupted Python between an atomic secret
+        # move and its release-record update. Re-running is the documented
+        # recovery path. Migration begins only after the new gateway passed its
+        # health check. Once it may have moved an env file, the old image and
+        # compose mount are no longer a compatible rollback target, so this is
+        # an explicit forward-only transaction boundary.
+        if python3 "$INSTALL_DIR/scripts/migrate_legacy_storage_envs.py" \
+            >/dev/null 2>&1 && gateway_current_healthy; then
+            INSTALL_COMPLETED=1
+            IMAGE_BUILD_STARTED=0
+            MIGRATION_STARTED=0
+            return 0
+        fi
+        # Keep the already-selected new image/compose even when the recovery
+        # probe is transiently unhealthy. A later installer retry resumes the
+        # idempotent migration without ever pairing migrated secrets with the
+        # old gateway mount layout.
+        return 0
+    fi
+    if [ "$CONTAINER_SWITCH_STARTED" -eq 1 ] && \
+       [ "$CONTAINER_ROLLBACK_DONE" -ne 1 ]; then
+        if ! restore_previous >/dev/null 2>&1; then
+            restore_previous_image_tag || true
+            restore_compose_baseline || true
+        fi
+        return 0
+    fi
+    restore_previous_image_tag || true
+    restore_compose_baseline || true
+}
+
+rollback_install_on_exit() {
+    rie_status=$?
+    trap - 0 1 2 15
+    if [ "$INSTALL_COMPLETED" -ne 1 ]; then
+        rollback_interrupted_install
+    fi
+    discard_rollback_config
+    exit "$rie_status"
+}
+
+rollback_install_on_signal() {
+    ris_status=$1
+    trap - 0 1 2 15
+    if [ "$INSTALL_COMPLETED" -ne 1 ]; then
+        rollback_interrupted_install
+    fi
+    discard_rollback_config
+    exit "$ris_status"
+}
+
+trap rollback_install_on_exit 0
+trap 'rollback_install_on_signal 129' 1
+trap 'rollback_install_on_signal 130' 2
+trap 'rollback_install_on_signal 143' 15
+if [ "$WAS_MANAGED" -eq 1 ] && [ "$container_exists" -eq 1 ]; then
+    ROLLBACK_CONFIG_DIR=$(mktemp -d /run/zhuojian-storage-gateway-rollback.XXXXXX)
+    PREVIOUS_COMPOSE_FILE=$ROLLBACK_CONFIG_DIR/compose.yaml
+    install -o root -g root -m 0600 "$INSTALL_DIR/compose.yaml" "$PREVIOUS_COMPOSE_FILE"
+fi
 
 install_asset() {
     ia_relative=$1
@@ -308,6 +519,7 @@ if [ "$SOURCE_DIR" != "$INSTALL_DIR" ]; then
         compose.yaml \
         pyproject.toml \
         requirements.txt \
+        scripts/migrate_legacy_storage_envs.py \
         src/zhuojian_storage_gateway/__init__.py \
         src/zhuojian_storage_gateway/app.py \
         src/zhuojian_storage_gateway/cli.py \
@@ -324,6 +536,9 @@ fi
 install -o root -g root -m 0750 \
     "$INSTALL_DIR/bin/zhuojian-storage-gateway-admin" "$WRAPPER_PATH"
 
+python3 "$INSTALL_DIR/scripts/migrate_legacy_storage_envs.py" --dry-run >/dev/null || \
+    die "legacy storage environment preflight failed; no gateway container was changed"
+
 compose() {
     docker compose \
         --project-name "$COMPOSE_PROJECT" \
@@ -332,8 +547,21 @@ compose() {
         "$@"
 }
 
+previous_compose() {
+    [ -n "$PREVIOUS_COMPOSE_FILE" ] && [ -f "$PREVIOUS_COMPOSE_FILE" ] || return 1
+    docker compose \
+        --project-name "$COMPOSE_PROJECT" \
+        --project-directory "$INSTALL_DIR" \
+        --file "$PREVIOUS_COMPOSE_FILE" \
+        "$@"
+}
+
 previous_image_id=
+previous_tag_image_id=
 previous_was_healthy=0
+if docker image inspect "$IMAGE_NAME" >/dev/null 2>&1; then
+    previous_tag_image_id=$(docker image inspect --format '{{.Id}}' "$IMAGE_NAME")
+fi
 if [ "$container_exists" -eq 1 ]; then
     previous_image_id=$(docker container inspect --format '{{.Image}}' "$CONTAINER_NAME")
     previous_state=$(docker container inspect --format \
@@ -362,32 +590,46 @@ wait_for_health() {
 
 restore_previous() {
     [ "$previous_was_healthy" -eq 1 ] || return 1
+    [ -n "$PREVIOUS_COMPOSE_FILE" ] && [ -f "$PREVIOUS_COMPOSE_FILE" ] || return 1
     docker image inspect "$previous_image_id" >/dev/null 2>&1 || return 1
+    # Restore the persistent Compose baseline atomically before touching the
+    # container.  A second retry must still know the old image's exact env and
+    # mount layout after a cross-version failure.
+    restore_compose_baseline || return 1
     # Restore the stable tag even when Compose failed before replacing the old
     # healthy container; otherwise a later `compose up` would retry the bad image.
     docker image tag "$previous_image_id" "$IMAGE_NAME" >/dev/null 2>&1 || return 1
-    current_image_id=$(docker container inspect --format '{{.Image}}' \
-        "$CONTAINER_NAME" 2>/dev/null || true)
-    current_state=$(docker container inspect --format \
-        '{{.State.Status}}/{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' \
-        "$CONTAINER_NAME" 2>/dev/null || true)
-    if [ "$current_image_id" = "$previous_image_id" ] && \
-       [ "$current_state" = "running/healthy" ]; then
+    previous_compose up -d --no-deps --force-recreate "$COMPOSE_SERVICE" \
+        >/dev/null 2>&1 || return 1
+    reattach_application_networks || return 1
+    if wait_for_health; then
+        CONTAINER_ROLLBACK_DONE=1
+        IMAGE_BUILD_STARTED=0
+        CONTAINER_SWITCH_STARTED=0
+        MIGRATION_STARTED=0
         return 0
     fi
-    compose up -d --no-deps --force-recreate "$COMPOSE_SERVICE" >/dev/null 2>&1 || return 1
-    wait_for_health
+    return 1
 }
 
+IMAGE_BUILD_STARTED=1
 if ! compose build "$COMPOSE_SERVICE"; then
     die "gateway image build failed; no Docker resources were pruned"
 fi
 
+CONTAINER_SWITCH_STARTED=1
 if ! compose up -d --no-deps "$COMPOSE_SERVICE"; then
     if restore_previous; then
         die "gateway start failed; the previous healthy image was restored"
     fi
     die "gateway start failed; no previous healthy image was available to restore"
+fi
+
+if ! reattach_application_networks; then
+    if restore_previous; then
+        die "gateway network reattachment failed; the previous healthy image was restored"
+    fi
+    die "gateway network reattachment failed; inspect only managed application networks"
 fi
 
 if ! wait_for_health || ! docker exec "$CONTAINER_NAME" \
@@ -398,6 +640,17 @@ if ! wait_for_health || ! docker exec "$CONTAINER_NAME" \
     fi
     die "gateway health check failed; inspect the container without printing its environment"
 fi
+
+MIGRATION_STARTED=1
+if ! python3 "$INSTALL_DIR/scripts/migrate_legacy_storage_envs.py" >/dev/null; then
+    die "legacy storage environment migration failed; the new gateway was retained so the idempotent migration can be retried safely"
+fi
+
+INSTALL_COMPLETED=1
+IMAGE_BUILD_STARTED=0
+MIGRATION_STARTED=0
+discard_rollback_config
+trap - 0 1 2 15
 
 echo "ZhuoJian storage gateway is installed and locally healthy"
 echo "install directory: $INSTALL_DIR"

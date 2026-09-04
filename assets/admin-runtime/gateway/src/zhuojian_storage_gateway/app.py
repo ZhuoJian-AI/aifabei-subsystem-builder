@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import asyncio
 import os
 import shutil
 import tempfile
@@ -46,6 +47,7 @@ def create_app(
     api.state.registry = registry
     api.state.storage = storage
     api.state.settings = settings
+    api.state.upload_slots = asyncio.Semaphore(settings.max_concurrent_uploads)
     _prepare_spool_directory(settings)
 
     def authenticate(
@@ -102,40 +104,41 @@ def create_app(
         announced_size = _announced_size(request, settings.max_upload_bytes)
         _ensure_spool_capacity(settings, announced_size or 0)
 
-        with tempfile.SpooledTemporaryFile(
-            max_size=settings.spool_memory_bytes,
-            dir=settings.spool_dir,
-        ) as body:
-            async for chunk in request.stream():
-                size += len(chunk)
-                if size > settings.max_upload_bytes:
+        async with api.state.upload_slots:
+            with tempfile.SpooledTemporaryFile(
+                max_size=settings.spool_memory_bytes,
+                dir=settings.spool_dir,
+            ) as body:
+                async for chunk in request.stream():
+                    size += len(chunk)
+                    if size > settings.max_upload_bytes:
+                        raise HTTPException(
+                            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                            detail="Object exceeds the configured upload limit",
+                        )
+                    _ensure_spool_capacity(settings)
+                    digest.update(chunk)
+                    body.write(chunk)
+                if announced_size is not None and size != announced_size:
                     raise HTTPException(
-                        status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-                        detail="Object exceeds the configured upload limit",
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="Content-Length does not match the received object",
                     )
-                _ensure_spool_capacity(settings)
-                digest.update(chunk)
-                body.write(chunk)
-            if announced_size is not None and size != announced_size:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Content-Length does not match the received object",
-                )
-            body.seek(0)
-            try:
-                metadata = await run_in_threadpool(
-                    storage.put_object,
-                    full_key,
-                    body,
-                    content_type=content_type,
-                    sha256=digest.hexdigest(),
-                    size=size,
-                )
-            except StorageUnavailable as exc:
-                raise HTTPException(
-                    status_code=status.HTTP_502_BAD_GATEWAY,
-                    detail="Object storage is unavailable",
-                ) from exc
+                body.seek(0)
+                try:
+                    metadata = await run_in_threadpool(
+                        storage.put_object,
+                        full_key,
+                        body,
+                        content_type=content_type,
+                        sha256=digest.hexdigest(),
+                        size=size,
+                    )
+                except StorageUnavailable as exc:
+                    raise HTTPException(
+                        status_code=status.HTTP_502_BAD_GATEWAY,
+                        detail="Object storage is unavailable",
+                    ) from exc
 
         return JSONResponse(
             status_code=status.HTTP_201_CREATED,

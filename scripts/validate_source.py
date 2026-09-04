@@ -71,6 +71,10 @@ def main() -> int:
             "FILE_STORAGE_ROOT",
             "FILE_STORAGE_GATEWAY_URL",
             "FILE_STORAGE_TOKEN",
+            "FILE_STORAGE_UPLOAD_LOCK_FILE",
+            "Content-Length is required for file uploads",
+            "deletion_state='uploading'",
+            "recover_pending_deletions_once",
         ) if token in text)
         if PLATFORM_MODEL_CREDENTIAL.search(text):
             failures.append(
@@ -90,11 +94,16 @@ def main() -> int:
     missing_scope = {"pageKeys", "actionKeys", "pageAccess"} - page_scope_tokens
     if missing_scope:
         failures.append(
-            "未实现 v2.4 SSO 页面/操作 allowlist：" + ", ".join(sorted(missing_scope))
+            "未实现 v2.5 SSO 页面/操作 allowlist：" + ", ".join(sorted(missing_scope))
         )
     if args.requires_file_storage or args.requires_object_storage:
         missing_storage = {
-            "FILE_STORAGE_DRIVER", "FILE_STORAGE_ROOT"
+            "FILE_STORAGE_DRIVER",
+            "FILE_STORAGE_ROOT",
+            "FILE_STORAGE_UPLOAD_LOCK_FILE",
+            "Content-Length is required for file uploads",
+            "deletion_state='uploading'",
+            "recover_pending_deletions_once",
         } - storage_markers
         if missing_storage:
             failures.append(
@@ -117,7 +126,7 @@ def main() -> int:
         return 1
     print(
         "SOURCE VALIDATION PASS: platform model credentials are absent; "
-        "bridge origin and v2.4 SSO page/action scope are present"
+        "bridge origin and v2.5 SSO page/action scope are present"
     )
     return 0
 

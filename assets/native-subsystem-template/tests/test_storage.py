@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import tempfile
 import threading
 import unittest
@@ -56,7 +57,13 @@ class _GatewayHandler(BaseHTTPRequestHandler):
         return key, item
 
     def do_PUT(self):
-        if not self._authorize():
+        if self.headers.get("Authorization") != f"Bearer {self.token}":
+            # Drain the request body before replying so Windows does not turn
+            # the intended HTTP 403 into a connection-reset race.
+            length = int(self.headers.get("Content-Length") or "0")
+            if length:
+                self.rfile.read(length)
+            self.send_error(403)
             return
         key = self._key()
         if key is None:
@@ -152,6 +159,35 @@ class LocalStorageAdapterTests(unittest.TestCase):
             leftovers = list(Path(directory).rglob(".upload-*"))
             self.assertEqual(leftovers, [])
 
+    def test_cleanup_only_removes_old_runtime_staging_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            adapter = LocalStorageAdapter(root)
+            business_key = "orders/2026/.upload-business-document"
+            adapter.put(business_key, b"keep")
+            business_path = root / "orders" / "2026" / ".upload-business-document"
+            old_time = 1
+            os.utime(business_path, (old_time, old_time))
+
+            staging = root / ".zhuojian-upload-staging"
+            stale = staging / ".upload-abandoned"
+            fresh = staging / ".upload-active"
+            stale.write_bytes(b"stale")
+            fresh.write_bytes(b"fresh")
+            os.utime(stale, (old_time, old_time))
+
+            self.assertEqual(adapter.cleanup_stale_uploads(1800), 1)
+            self.assertFalse(stale.exists())
+            self.assertTrue(fresh.exists())
+            with adapter.open(business_key) as stream:
+                self.assertEqual(stream.read(), b"keep")
+
+    def test_runtime_staging_namespace_is_reserved(self):
+        with tempfile.TemporaryDirectory() as directory:
+            adapter = LocalStorageAdapter(directory)
+            with self.assertRaises(InvalidStorageKey):
+                adapter.put(".zhuojian-upload-staging/forged", b"no")
+
     def test_unsafe_keys_are_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             adapter = LocalStorageAdapter(directory)
@@ -239,6 +275,19 @@ class StorageFactoryTests(unittest.TestCase):
             "FILE_STORAGE_TOKEN": "generated-project-token",
         })
         self.assertIsInstance(adapter, GatewayStorageAdapter)
+        # The gateway acknowledges only after its bounded spool is committed to
+        # OSS.  A 30-second default can time out a valid 512 MiB transfer and
+        # leave the object committed without application metadata.
+        self.assertEqual(adapter.timeout, 900.0)
+
+    def test_gateway_timeout_can_be_explicitly_reduced_for_small_workloads(self):
+        adapter = storage_from_env({
+            "FILE_STORAGE_DRIVER": "oss-gateway",
+            "FILE_STORAGE_GATEWAY_URL": "http://gateway:8080",
+            "FILE_STORAGE_TOKEN": "generated-project-token",
+            "FILE_STORAGE_GATEWAY_TIMEOUT_SECONDS": "45",
+        })
+        self.assertEqual(adapter.timeout, 45.0)
 
     def test_legacy_gateway_environment_remains_compatible(self):
         adapter = storage_from_env({

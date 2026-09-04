@@ -28,6 +28,7 @@ import tarfile
 import tempfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 from dataclasses import dataclass
@@ -41,6 +42,7 @@ except ImportError:  # pragma: no cover - Windows development host
 
 MANAGED_BY = "zhuojian-runtime-admin/v1"
 SLUG_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
+STORAGE_ROTATION_OPERATION_RE = re.compile(r"^[0-9a-f]{32}$")
 DOMAIN_RE = re.compile(
     r"^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+"
     r"[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$"
@@ -55,8 +57,14 @@ STORAGE_GATEWAY_SERVICE = "zhuojian-storage-gateway"
 STORAGE_GATEWAY_URL = f"http://{STORAGE_GATEWAY_SERVICE}:8080"
 STORAGE_ADMIN = Path("/usr/local/sbin/zhuojian-storage-gateway-admin")
 STORAGE_CREDENTIAL = Path("/etc/zhuojian/oss-gateway.env")
+STORAGE_APP_NETWORK_PREFIX = "zhuojian-storage-"
+STORAGE_NETWORK_ROLE_LABEL = "application-storage"
 BUCKET_RE = re.compile(r"^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$")
 REGION_RE = re.compile(r"^[a-z0-9][a-z0-9-]+$")
+ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+DEFAULT_PLATFORM_ORIGIN = "https://ai-platform.staging.zhuojianai.com"
+NGINX_CLIENT_MAX_BODY_SIZE = "512m"
+NGINX_APPLICATION_RESPONSE_TIMEOUT = "900s"
 
 
 class AdminError(RuntimeError):
@@ -68,6 +76,7 @@ class Paths:
     runtime: Path = Path("/etc/zhuojian/runtime.json")
     credential: Path = Path("/etc/zhuojian/runtime-registration.key")
     apps_env: Path = Path("/etc/zhuojian/apps")
+    storage_apps: Path = Path("/etc/zhuojian/storage-apps")
     repositories: Path = Path("/srv/zhuojian/repositories")
     deployments: Path = Path("/srv/zhuojian/deployments")
     data: Path = Path("/srv/zhuojian/data")
@@ -75,6 +84,7 @@ class Paths:
     nginx: Path = Path("/etc/nginx/conf.d")
     acme: Path = Path("/var/lib/zhuojian/acme")
     state: Path = Path("/run/zhuojian/storage-state.json")
+    upload_lock: Path = Path("/run/zhuojian/upload.lock")
     lock: Path = Path("/run/lock/zhuojian-runtime-admin.lock")
 
 
@@ -93,6 +103,12 @@ def validate_slug(value: str) -> str:
     return value
 
 
+def validate_storage_rotation_operation_id(value: str) -> str:
+    if not isinstance(value, str) or not STORAGE_ROTATION_OPERATION_RE.fullmatch(value):
+        raise AdminError("storage rotation operation id must be 32 lowercase hexadecimal characters")
+    return value
+
+
 def validate_management_host(value: str) -> str:
     if not value or value != value.strip() or any(ch in value for ch in "/\\:@[] \t\r\n"):
         raise AdminError("management host must be one plain IP address or DNS name")
@@ -105,6 +121,55 @@ def validate_management_host(value: str) -> str:
     if address.is_unspecified or address.is_multicast:
         raise AdminError("management host cannot be unspecified or multicast")
     return str(address)
+
+
+def platform_origin(profile: dict[str, Any]) -> str:
+    """Return one canonical HTTPS origin safe for env and Nginx contexts."""
+
+    platform = profile.get("platform")
+    value = platform.get("baseUrl", DEFAULT_PLATFORM_ORIGIN) if isinstance(platform, dict) else DEFAULT_PLATFORM_ORIGIN
+    if not isinstance(value, str) or value != value.strip() or len(value) > 2048:
+        raise AdminError("runtime platform.baseUrl must be one HTTPS origin")
+    try:
+        parsed = urllib.parse.urlsplit(value)
+        port = parsed.port
+    except ValueError:
+        raise AdminError("runtime platform.baseUrl must be one HTTPS origin") from None
+    if (
+        parsed.scheme.lower() != "https"
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path not in {"", "/"}
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise AdminError("runtime platform.baseUrl must be one HTTPS origin")
+    hostname = parsed.hostname.lower()
+    try:
+        address = ipaddress.ip_address(hostname)
+    except ValueError:
+        if not DOMAIN_RE.fullmatch(hostname):
+            raise AdminError("runtime platform.baseUrl must be one HTTPS origin") from None
+        rendered_host = hostname
+    else:
+        if address.is_unspecified or address.is_multicast:
+            raise AdminError("runtime platform.baseUrl must be one HTTPS origin")
+        rendered_host = f"[{address}]" if address.version == 6 else str(address)
+    if port is not None and not 1 <= port <= 65535:
+        raise AdminError("runtime platform.baseUrl must be one HTTPS origin")
+    return f"https://{rendered_host}{f':{port}' if port is not None else ''}"
+
+
+def normalize_aliyun_region(value: Any) -> str:
+    """Canonicalize the accepted `oss-<region>` alias to Alibaba's region ID."""
+
+    if not isinstance(value, str) or value != value.strip():
+        raise AdminError("OSS region must be an Alibaba Cloud region ID")
+    normalized = value[4:] if value.startswith("oss-") else value
+    if normalized.startswith("oss-") or not REGION_RE.fullmatch(normalized):
+        raise AdminError("OSS region must be an Alibaba Cloud region ID")
+    return normalized
 
 
 def assert_plain_file(path: Path, *, may_not_exist: bool = False) -> None:
@@ -287,8 +352,10 @@ def validate_oss_profile(profile: dict[str, Any]) -> dict[str, Any]:
     region = storage.get("region")
     if not isinstance(bucket, str) or not BUCKET_RE.fullmatch(bucket):
         raise AdminError("objectStorage bucket is invalid")
-    if not isinstance(region, str) or not REGION_RE.fullmatch(region):
-        raise AdminError("objectStorage region is invalid")
+    try:
+        normalize_aliyun_region(region)
+    except AdminError:
+        raise AdminError("objectStorage region is invalid") from None
     if storage.get("rootPrefix") != "apps":
         raise AdminError("objectStorage.rootPrefix must equal apps")
     if storage.get("gatewayBaseUrl") != STORAGE_GATEWAY_URL:
@@ -300,8 +367,173 @@ def validate_oss_profile(profile: dict[str, Any]) -> dict[str, Any]:
     return storage
 
 
+def oss_releases_for_scope_change(paths: Paths = PATHS) -> list[str]:
+    """List OSS releases, refusing when any release marker cannot be trusted."""
+
+    assert_directory(paths.deployments)
+    oss_releases: list[str] = []
+    for candidate in sorted(paths.deployments.glob("*/release.json")):
+        try:
+            validate_slug(candidate.parent.name)
+            assert_plain_file(candidate)
+            marker = json.loads(candidate.read_text(encoding="utf-8"))
+            if not isinstance(marker, dict) or marker.get("managedBy") != MANAGED_BY:
+                raise AdminError("release marker is not managed by this Runtime")
+            storage_mode = validate_storage_mode(
+                marker.get("storageMode", LOCAL_STORAGE_MODE)
+            )
+        except (AdminError, OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise AdminError(
+                f"refusing OSS scope change because a release record is invalid: {candidate}"
+            ) from exc
+        if storage_mode == OSS_STORAGE_MODE:
+            oss_releases.append(candidate.parent.name)
+    return oss_releases
+
+
 def storage_env_path(slug: str, paths: Paths = PATHS) -> Path:
+    return paths.storage_apps / f"{validate_slug(slug)}.storage.env"
+
+
+def legacy_storage_env_path(slug: str, paths: Paths = PATHS) -> Path:
     return paths.apps_env / f"{validate_slug(slug)}.storage.env"
+
+
+def installed_storage_env_path(
+    slug: str,
+    paths: Paths = PATHS,
+    *,
+    expected: str | None = None,
+) -> Path:
+    """Resolve the one supported storage env across a host-first gateway upgrade."""
+
+    candidates = (storage_env_path(slug, paths), legacy_storage_env_path(slug, paths))
+    present = [path for path in candidates if path.exists() or path.is_symlink()]
+    if len(present) != 1:
+        if present:
+            raise AdminError("both legacy and current application storage env files exist")
+        raise AdminError("application storage environment was not created by the gateway")
+    actual = present[0]
+    secure_file_metadata(actual, "application storage environment")
+    if expected is not None:
+        allowed = {str(path) for path in candidates}
+        if expected not in allowed:
+            raise AdminError("release storageEnvFile is not a supported managed path")
+        if expected != str(actual):
+            raise AdminError("release storageEnvFile does not match the installed managed secret")
+    return actual
+
+
+def storage_network_name(slug: str) -> str:
+    return f"{STORAGE_APP_NETWORK_PREFIX}{validate_slug(slug)}"
+
+
+def storage_network_labels(slug: str, profile: dict[str, Any]) -> dict[str, str]:
+    return {
+        "com.zhuojian.managed-by": MANAGED_BY,
+        "com.zhuojian.enterprise": profile["enterpriseKey"],
+        "com.zhuojian.application": validate_slug(slug),
+        "com.zhuojian.network-role": STORAGE_NETWORK_ROLE_LABEL,
+    }
+
+
+def inspect_storage_network(
+    name: str, slug: str, profile: dict[str, Any]
+) -> dict[str, Any] | None:
+    result = run(
+        ["docker", "network", "inspect", "--format", "{{json .}}", name],
+        check=False,
+    )
+    if result.returncode:
+        return None
+    try:
+        network = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise AdminError(f"managed storage network returned invalid metadata: {name}") from exc
+    if not isinstance(network, dict):
+        raise AdminError(f"managed storage network returned invalid metadata: {name}")
+    labels = network.get("Labels")
+    expected = storage_network_labels(slug, profile)
+    if not isinstance(labels, dict) or any(labels.get(key) != value for key, value in expected.items()):
+        raise AdminError(f"refusing storage network without exact managed ownership: {name}")
+    if network.get("Driver") != "bridge" or network.get("Scope") != "local":
+        raise AdminError(f"managed application storage network must be a local bridge: {name}")
+    containers = network.get("Containers")
+    if containers is None:
+        containers = {}
+    if not isinstance(containers, dict):
+        raise AdminError(f"managed storage network returned invalid membership: {name}")
+    canonical = expected_names(slug, profile)["containerName"]
+    allowed_names = {STORAGE_GATEWAY_SERVICE, canonical}
+    for item in containers.values():
+        member_name = item.get("Name") if isinstance(item, dict) else None
+        if member_name in allowed_names:
+            continue
+        rollback_name = isinstance(member_name, str) and re.fullmatch(
+            rf"{re.escape(canonical)}-rollback-(?:(?:storage|current)-)?[0-9a-f]{{12}}",
+            member_name,
+        )
+        if not rollback_name:
+            raise AdminError(f"refusing storage network with an unknown member: {name}")
+        rollback = run(
+            [
+                "docker",
+                "inspect",
+                "--format",
+                '{{ index .Config.Labels "com.zhuojian.managed-by" }}|'
+                '{{ index .Config.Labels "com.zhuojian.application" }}|'
+                '{{ index .Config.Labels "com.zhuojian.enterprise" }}|{{.State.Running}}',
+                member_name,
+            ],
+            check=False,
+        )
+        expected_rollback = f"{MANAGED_BY}|{slug}|{profile['enterpriseKey']}|false"
+        if rollback.returncode or rollback.stdout.strip() != expected_rollback:
+            raise AdminError(
+                f"refusing running or incorrectly labeled rollback member: {name}"
+            )
+    return network
+
+
+def ensure_storage_network(slug: str, profile: dict[str, Any]) -> str:
+    """Create/verify one app-only bridge and attach only the shared gateway."""
+
+    name = storage_network_name(slug)
+    network = inspect_storage_network(name, slug, profile)
+    if network is None:
+        label_args: list[str] = []
+        for key, value in storage_network_labels(slug, profile).items():
+            label_args += ["--label", f"{key}={value}"]
+        run(["docker", "network", "create", "--driver", "bridge", *label_args, name])
+        network = inspect_storage_network(name, slug, profile)
+        if network is None:
+            raise AdminError(f"managed application storage network was not created: {name}")
+    members = {
+        item.get("Name")
+        for item in network.get("Containers", {}).values()
+        if isinstance(item, dict)
+    }
+    if STORAGE_GATEWAY_SERVICE not in members:
+        run(
+            [
+                "docker",
+                "network",
+                "connect",
+                "--alias",
+                STORAGE_GATEWAY_SERVICE,
+                name,
+                STORAGE_GATEWAY_SERVICE,
+            ]
+        )
+        network = inspect_storage_network(name, slug, profile)
+        members = {
+            item.get("Name")
+            for item in (network or {}).get("Containers", {}).values()
+            if isinstance(item, dict)
+        }
+        if STORAGE_GATEWAY_SERVICE not in members:
+            raise AdminError(f"storage gateway did not join the application network: {name}")
+    return name
 
 
 def storage_foundation_ready(profile: dict[str, Any]) -> None:
@@ -352,6 +584,7 @@ def verify_storage_foundation(bucket: str, region: str) -> None:
         raise AdminError("OSS gateway acceptance probe returned invalid output") from exc
     checks = payload.get("checks") if isinstance(payload, dict) else None
     required = {
+        "anonymousReadDenied",
         "put",
         "get",
         "delete",
@@ -378,9 +611,112 @@ def ensure_storage_identity(slug: str, profile: dict[str, Any], paths: Paths = P
         # Gateway output is deliberately suppressed: a future buggy gateway must
         # not be able to leak a project token through this administrator's error.
         raise AdminError(f"storage gateway refused ensure-app (exit {result.returncode})")
-    target = storage_env_path(slug, paths)
-    secure_file_metadata(target, "application storage environment")
+    target = installed_storage_env_path(slug, paths)
+    ensure_storage_network(slug, profile)
     return target
+
+
+def rotate_storage_identity(
+    slug: str, grace_seconds: int, profile: dict[str, Any], paths: Paths = PATHS
+) -> Path:
+    """Rotate via the root-only gateway without relaying any command output."""
+
+    storage_foundation_ready(profile)
+    ensure_storage_network(slug, profile)
+    result = subprocess.run(
+        [
+            str(STORAGE_ADMIN),
+            "rotate",
+            "--application-slug",
+            validate_slug(slug),
+            "--grace-seconds",
+            str(grace_seconds),
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode:
+        raise AdminError(f"storage gateway refused credential rotation (exit {result.returncode})")
+    return installed_storage_env_path(slug, paths)
+
+
+def prepare_storage_rotation(
+    slug: str,
+    operation_id: str,
+    grace_seconds: int,
+    profile: dict[str, Any],
+    paths: Paths = PATHS,
+) -> Path:
+    """Idempotently install a new token while the old token remains current."""
+
+    storage_foundation_ready(profile)
+    ensure_storage_network(slug, profile)
+    result = subprocess.run(
+        [
+            str(STORAGE_ADMIN),
+            "prepare-rotate",
+            "--application-slug",
+            validate_slug(slug),
+            "--operation-id",
+            validate_storage_rotation_operation_id(operation_id),
+            "--grace-seconds",
+            str(grace_seconds),
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode:
+        raise AdminError(f"storage gateway refused rotation prepare (exit {result.returncode})")
+    return installed_storage_env_path(slug, paths)
+
+
+def commit_storage_rotation(
+    slug: str,
+    operation_id: str,
+    profile: dict[str, Any],
+    paths: Paths = PATHS,
+) -> int:
+    """Commit a prepared rotation and return its persisted grace deadline."""
+
+    storage_foundation_ready(profile)
+    result = subprocess.run(
+        [
+            str(STORAGE_ADMIN),
+            "commit-rotate",
+            "--application-slug",
+            validate_slug(slug),
+            "--operation-id",
+            validate_storage_rotation_operation_id(operation_id),
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode:
+        raise AdminError(f"storage gateway refused rotation commit (exit {result.returncode})")
+    try:
+        payload = json.loads(result.stdout)
+        grace_until = payload.get("graceUntil")
+        if (
+            not isinstance(payload, dict)
+            or payload.get("ok") is not True
+            or payload.get("action") != "commit-rotate"
+            or payload.get("applicationSlug") != slug
+            or payload.get("operationId") != operation_id
+            or payload.get("phase") != "committed"
+            or isinstance(grace_until, bool)
+            or not isinstance(grace_until, int)
+            or grace_until <= 0
+        ):
+            raise ValueError("unexpected safe result")
+    except (AttributeError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        # Never relay stdout: only the fixed safe fields are accepted, so a
+        # future gateway regression cannot leak a token through this process.
+        raise AdminError("storage gateway returned an invalid rotation commit result") from exc
+    installed_storage_env_path(slug, paths)
+    return grace_until
 
 
 def patch_runtime(args: argparse.Namespace, paths: Paths = PATHS) -> dict[str, Any]:
@@ -434,35 +770,22 @@ def configure_oss_gateway(args: argparse.Namespace, paths: Paths = PATHS) -> dic
         if not credential["secure"]:
             raise AdminError("registration credential must be root-owned mode 0600")
         bucket = args.bucket.strip()
-        region = args.region.strip()
+        region = normalize_aliyun_region(args.region)
         if not BUCKET_RE.fullmatch(bucket):
             raise AdminError("OSS bucket must be 3-63 lowercase letters, digits, or hyphens")
-        if not REGION_RE.fullmatch(region):
-            raise AdminError("OSS region must be an Alibaba Cloud region ID")
         if args.gateway_url != STORAGE_GATEWAY_URL:
             raise AdminError(f"gateway URL must equal {STORAGE_GATEWAY_URL}")
         if args.credential_ref != str(STORAGE_CREDENTIAL):
             raise AdminError(f"gateway credential reference must equal {STORAGE_CREDENTIAL}")
         current_storage = profile.get("objectStorage")
         if isinstance(current_storage, dict):
-            current_scope = (current_storage.get("bucket"), current_storage.get("region"))
+            current_scope = (
+                current_storage.get("bucket"),
+                normalize_aliyun_region(current_storage.get("region")),
+            )
             requested_scope = (bucket, region)
             if current_scope != requested_scope:
-                oss_releases: list[str] = []
-                for candidate in sorted(paths.deployments.glob("*/release.json")):
-                    try:
-                        marker = json.loads(candidate.read_text(encoding="utf-8"))
-                    except (OSError, UnicodeError, json.JSONDecodeError):
-                        continue
-                    if (
-                        isinstance(marker, dict)
-                        and marker.get("managedBy") == MANAGED_BY
-                        and validate_storage_mode(
-                            marker.get("storageMode", LOCAL_STORAGE_MODE)
-                        )
-                        == OSS_STORAGE_MODE
-                    ):
-                        oss_releases.append(candidate.parent.name)
+                oss_releases = oss_releases_for_scope_change(paths)
                 if oss_releases:
                     raise AdminError(
                         "refusing to change the OSS bucket or region while managed "
@@ -543,8 +866,12 @@ def disk_state(paths: Paths = PATHS) -> dict[str, Any]:
     storage = profile.get("fileStorage", {})
     warning = int(storage.get("warningUsedPercent", 80))
     stop = int(storage.get("stopUploadUsedPercent", 90))
-    minimum = int(storage.get("minimumFreeGiB", 5))
-    if not (1 <= warning < stop <= 100 and minimum >= 1):
+    minimum = storage.get("minimumFreeGiB", 5)
+    if (
+        isinstance(minimum, bool)
+        or not isinstance(minimum, int)
+        or not (1 <= warning < stop <= 100 and minimum >= 1)
+    ):
         raise AdminError("invalid file-storage thresholds in runtime profile")
     usage = shutil.disk_usage(paths.data)
     used_percent = round((usage.used / usage.total) * 100, 2)
@@ -610,13 +937,23 @@ def load_release(slug: str, profile: dict[str, Any], paths: Paths = PATHS) -> di
     # Runtime default changes.  A normal deploy must never perform migration.
     storage_mode = validate_storage_mode(release.get("storageMode", LOCAL_STORAGE_MODE))
     release["storageMode"] = storage_mode
-    expected_storage_env = str(storage_env_path(slug, paths))
     if storage_mode == OSS_STORAGE_MODE:
         validate_oss_profile(profile)
-        if release.get("storageEnvFile") != expected_storage_env:
-            raise AdminError("release storageEnvFile does not match the fixed application secret path")
+        recorded_storage_env = release.get("storageEnvFile")
+        if not isinstance(recorded_storage_env, str):
+            raise AdminError("release storageEnvFile is missing")
+        installed_storage_env_path(slug, paths, expected=recorded_storage_env)
+        expected_storage_network = storage_network_name(slug)
+        recorded_storage_network = release.get("storageNetwork")
+        if recorded_storage_network not in {None, expected_storage_network}:
+            raise AdminError("release storageNetwork does not match the fixed application network")
+        # Records from before per-app bridge isolation are upgraded in memory and
+        # are persisted by the next successful deploy/rollback operation.
+        release["storageNetwork"] = expected_storage_network
     elif "storageEnvFile" in release:
         raise AdminError("local-managed release must not carry an OSS storage environment")
+    elif "storageNetwork" in release:
+        raise AdminError("local-managed release must not carry an OSS storage network")
     return release
 
 
@@ -690,6 +1027,21 @@ def container_running(name: str) -> bool:
     return run(["docker", "inspect", "--format", "{{.State.Running}}", name]).stdout.strip() == "true"
 
 
+def container_storage_rotation_operation(name: str) -> str | None:
+    value = run(
+        [
+            "docker",
+            "inspect",
+            "--format",
+            '{{ index .Config.Labels "com.zhuojian.storage-rotation" }}',
+            name,
+        ]
+    ).stdout.strip()
+    if not value or value == "<no value>":
+        return None
+    return validate_storage_rotation_operation_id(value)
+
+
 def wait_for_health(port: int, host: str, timeout: int = 60) -> None:
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     deadline = time.monotonic() + timeout
@@ -710,22 +1062,118 @@ def wait_for_health(port: int, host: str, timeout: int = 60) -> None:
     raise AdminError(f"health check failed after {timeout}s: {last}")
 
 
+def read_secure_application_env(path: Path) -> bytes:
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        raise AdminError(f"cannot securely open application env: {path}") from exc
+    try:
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode):
+            raise AdminError(f"refusing non-regular application env: {path}")
+        if os.name != "nt" and info.st_uid != 0:
+            raise AdminError(f"application env must be root-owned mode 0600: {path}")
+        if stat.S_IMODE(info.st_mode) != 0o600:
+            raise AdminError(f"application env must be root-owned mode 0600: {path}")
+        with os.fdopen(descriptor, "rb", closefd=False) as handle:
+            payload = handle.read(1024 * 1024 + 1)
+        if len(payload) > 1024 * 1024:
+            raise AdminError(f"application env is unexpectedly large: {path}")
+        return payload
+    finally:
+        os.close(descriptor)
+
+
+def verify_upload_lock(paths: Paths = PATHS) -> dict[str, Any]:
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(paths.upload_lock, flags)
+    except OSError as exc:
+        raise AdminError("shared upload lock is unavailable") from exc
+    try:
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode):
+            raise AdminError("shared upload lock must be a regular file")
+        if os.name != "nt" and info.st_uid != 0:
+            raise AdminError("shared upload lock must be root-owned mode 0444")
+        if stat.S_IMODE(info.st_mode) != 0o444:
+            raise AdminError("shared upload lock must be root-owned mode 0444")
+        return {"secure": True, "path": str(paths.upload_lock)}
+    finally:
+        os.close(descriptor)
+
+
+def upsert_env_value(payload: bytes, key: str, value: str) -> bytes:
+    """Update one Docker env-file key without interpreting or exposing secrets."""
+
+    if not ENV_KEY_RE.fullmatch(key) or any(ch in value for ch in "\x00\r\n"):
+        raise AdminError("refusing unsafe application environment value")
+    try:
+        text = payload.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise AdminError("application env must be valid UTF-8") from exc
+    if "\x00" in text:
+        raise AdminError("application env contains a NUL byte")
+    lines = text.splitlines(keepends=True)
+    found = 0
+    updated: list[str] = []
+    for line in lines:
+        body = line.rstrip("\r\n")
+        ending = line[len(body) :]
+        if not body or body.startswith("#"):
+            updated.append(line)
+            continue
+        if "=" not in body:
+            raise AdminError("application env contains an invalid entry")
+        name, _ = body.split("=", 1)
+        if not ENV_KEY_RE.fullmatch(name):
+            raise AdminError("application env contains an invalid key")
+        if name == key:
+            found += 1
+            updated.append(f"{key}={value}{ending}")
+        else:
+            updated.append(line)
+    if found > 1:
+        raise AdminError(f"application env contains duplicate managed key: {key}")
+    if found == 0:
+        if updated and not updated[-1].endswith(("\n", "\r")):
+            updated[-1] += "\n"
+        updated.append(f"{key}={value}\n")
+    return "".join(updated).encode("utf-8")
+
+
 def ensure_env(slug: str, profile: dict[str, Any], paths: Paths = PATHS) -> Path:
+    slug = validate_slug(slug)
     target = paths.apps_env / f"{slug}.env"
+    saas_origin = platform_origin(profile)
+    public_origin = f"https://{expected_names(slug, profile, paths)['hostname']}"
     if target.exists() or target.is_symlink():
-        assert_plain_file(target)
-        if stat.S_IMODE(target.stat().st_mode) != 0o600:
-            raise AdminError(f"application env must be mode 0600: {target}")
+        previous = read_secure_application_env(target)
+        updated = upsert_env_value(previous, "ZHUOJIAN_SAAS_ORIGINS", saas_origin)
+        updated = upsert_env_value(updated, "ZHUOJIAN_PUBLIC_ORIGIN", public_origin)
+        updated = upsert_env_value(
+            updated,
+            "FILE_STORAGE_UPLOAD_LOCK_FILE",
+            "/run/zhuojian/upload.lock",
+        )
+        if updated != previous:
+            atomic_write(target, updated, 0o600)
         return target
     values = {
         "ZHUOJIAN_ENTERPRISE_KEY": profile["enterpriseKey"],
         "ZHUOJIAN_ORGANIZATION_ID": profile["organizationId"],
         "ZHUOJIAN_APPLICATION_SLUG": slug,
+        "ZHUOJIAN_PUBLIC_ORIGIN": public_origin,
+        "ZHUOJIAN_SAAS_ORIGINS": saas_origin,
         "ZHUOJIAN_INTEGRATION_SECRET": secrets.token_urlsafe(48),
         "SESSION_SECRET": secrets.token_urlsafe(48),
         "FILE_STORAGE_DRIVER": "local",
         "FILE_STORAGE_ROOT": "/data/files",
         "FILE_STORAGE_STATE_FILE": "/run/zhuojian/storage-state.json",
+        "FILE_STORAGE_UPLOAD_LOCK_FILE": "/run/zhuojian/upload.lock",
     }
     atomic_write(target, "".join(f"{key}={value}\n" for key, value in values.items()).encode(), 0o600)
     return target
@@ -735,7 +1183,9 @@ def tls_listens(profile: dict[str, Any]) -> tuple[str, str]:
     mode = profile.get("network", {}).get("managementAccess", {}).get("mode")
     if mode == "ssh-https-multiplex":
         return "listen 127.0.0.1:8443 ssl;", "listen [::1]:8443 ssl;"
-    return "listen 443 ssl;", "listen [::]:443 ssl;"
+    if mode == "standard-ssh":
+        return "listen 443 ssl;", "listen [::]:443 ssl;"
+    raise AdminError("runtime network.managementAccess.mode is unsupported")
 
 
 def nginx_text(slug: str, port: int, profile: dict[str, Any], paths: Paths = PATHS) -> str:
@@ -744,9 +1194,7 @@ def nginx_text(slug: str, port: int, profile: dict[str, Any], paths: Paths = PAT
     if not (cert_dir / "fullchain.pem").is_file() or not (cert_dir / "privkey.pem").is_file():
         raise AdminError(f"HTTPS certificate is missing for {host}; run certify first")
     listen4, listen6 = tls_listens(profile)
-    platform = profile.get("platform", {}).get("baseUrl", "https://ai-platform.staging.zhuojianai.com")
-    if not isinstance(platform, str) or not platform.startswith("https://") or any(ch in platform for ch in " ;'\"\n\r"):
-        raise AdminError("runtime platform.baseUrl is unsafe for Nginx")
+    platform = platform_origin(profile)
     return f"""# Managed by {MANAGED_BY}; application={slug}
 server {{
     listen 80;
@@ -765,7 +1213,12 @@ server {{
     ssl_protocols TLSv1.2 TLSv1.3;
     add_header Content-Security-Policy \"frame-ancestors 'self' {platform}\" always;
     add_header X-Content-Type-Options nosniff always;
-    client_max_body_size 100m;
+    client_max_body_size {NGINX_CLIENT_MAX_BODY_SIZE};
+    client_body_timeout 30s;
+    # Forward request bodies as they arrive.  Nginx must not spool a permitted
+    # 512 MiB upload to its unmanaged client_body_temp directory before the
+    # application/gateway authentication and disk gates can run.
+    proxy_request_buffering off;
 
     # The one-time SSO ticket is carried in the query string by contract.
     # Never let Nginx persist it in the default request log.
@@ -787,7 +1240,11 @@ server {{
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto https;
-        proxy_read_timeout 120s;
+        # A bounded 512 MiB upload is acknowledged only after the private
+        # gateway has committed it to OSS.  Keep the public response window in
+        # sync with FILE_STORAGE_GATEWAY_TIMEOUT_SECONDS so a valid slow OSS
+        # write is not reported as a failure after 120 seconds.
+        proxy_read_timeout {NGINX_APPLICATION_RESPONSE_TIMEOUT};
     }}
 }}
 """
@@ -883,6 +1340,11 @@ def provision_release(slug: str, profile: dict[str, Any], paths: Paths = PATHS) 
     target = release_path(slug, paths)
     if target.exists():
         release = load_release(slug, profile, paths)
+        require_no_pending_storage_rotation(release)
+        # Runtime-owned non-secret settings evolve with the template.  Refresh
+        # them for existing releases before a new image is started, while
+        # preserving integration/session secrets and the frozen storage mode.
+        ensure_env(slug, profile, paths)
         if release["storageMode"] == OSS_STORAGE_MODE:
             ensure_storage_identity(slug, profile, paths)
         return release
@@ -917,11 +1379,21 @@ def provision_release(slug: str, profile: dict[str, Any], paths: Paths = PATHS) 
     }
     if storage_env is not None:
         release["storageEnvFile"] = str(storage_env)
+        release["storageNetwork"] = storage_network_name(slug)
     atomic_json(target, release, 0o640)
     return release
 
 
-def start_container(name: str, image: str, release: dict[str, Any], slug: str, profile: dict[str, Any], paths: Paths = PATHS) -> None:
+def start_container(
+    name: str,
+    image: str,
+    release: dict[str, Any],
+    slug: str,
+    profile: dict[str, Any],
+    paths: Paths = PATHS,
+    *,
+    storage_rotation_operation_id: str | None = None,
+) -> None:
     if container_exists(name):
         raise AdminError(f"container name is already occupied: {name}")
     commit = image.rsplit(":", 1)[-1].lower()
@@ -929,6 +1401,7 @@ def start_container(name: str, image: str, release: dict[str, Any], slug: str, p
         raise AdminError("managed container image must end in an immutable commit SHA")
     if not paths.state.exists():
         write_disk_state(disk_state(paths), paths)
+    verify_upload_lock(paths)
     command = [
         "docker", "run", "--detach", "--name", name, "--restart", "unless-stopped",
         "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true",
@@ -941,12 +1414,23 @@ def start_container(name: str, image: str, release: dict[str, Any], slug: str, p
         "--mount", f"type=bind,src={paths.state.parent},dst=/run/zhuojian,readonly",
         "--publish", f"127.0.0.1:{release['port']}:8000",
     ]
+    if storage_rotation_operation_id is not None:
+        command += [
+            "--label",
+            "com.zhuojian.storage-rotation="
+            + validate_storage_rotation_operation_id(storage_rotation_operation_id),
+        ]
     storage_mode = validate_storage_mode(release.get("storageMode", LOCAL_STORAGE_MODE))
     if storage_mode == OSS_STORAGE_MODE:
         storage_env = ensure_storage_identity(slug, profile, paths)
         if str(storage_env) != release.get("storageEnvFile"):
             raise AdminError("release storage environment does not match the managed gateway identity")
-        command += ["--env-file", str(storage_env), "--network", STORAGE_NETWORK]
+        # ensure_storage_identity has already created/verified the app-only
+        # bridge and attached the gateway before returning the env path.
+        storage_network = storage_network_name(slug)
+        if storage_network != release.get("storageNetwork", storage_network_name(slug)):
+            raise AdminError("release storage network does not match the managed application network")
+        command += ["--env-file", str(storage_env), "--network", storage_network]
     command.append(image)
     run(command)
 
@@ -1077,11 +1561,290 @@ def cmd_deploy(args: argparse.Namespace, paths: Paths = PATHS) -> dict[str, Any]
     }
 
 
+STORAGE_ROTATION_PHASES = {"preparing", "prepared", "switching", "healthy", "committed"}
+
+
+def validated_storage_rotation_marker(
+    release: dict[str, Any], profile: dict[str, Any]
+) -> dict[str, Any] | None:
+    marker = release.get("storageRotation")
+    if marker is None:
+        return None
+    if not isinstance(marker, dict):
+        raise AdminError("release contains an invalid storage rotation marker")
+    operation_id = validate_storage_rotation_operation_id(marker.get("operationId"))
+    phase = marker.get("phase")
+    grace_seconds = marker.get("graceSeconds")
+    health_timeout = marker.get("healthTimeout")
+    if phase not in STORAGE_ROTATION_PHASES:
+        raise AdminError("release contains an invalid storage rotation phase")
+    if isinstance(grace_seconds, bool) or not isinstance(grace_seconds, int) or not 60 <= grace_seconds <= 86400:
+        raise AdminError("release contains an invalid storage rotation grace")
+    if isinstance(health_timeout, bool) or not isinstance(health_timeout, int) or not 1 <= health_timeout <= 300:
+        raise AdminError("release contains an invalid storage rotation health timeout")
+    if grace_seconds < health_timeout + 60:
+        raise AdminError("release storage rotation grace is shorter than its health window")
+    current = release.get("current")
+    if not isinstance(current, dict):
+        raise AdminError("storage rotation has no frozen healthy release")
+    commit = marker.get("commit")
+    image = marker.get("image")
+    expected_image = f"zhuojian/{profile['enterpriseKey']}/{release['applicationSlug']}:{commit}"
+    if (
+        not isinstance(commit, str)
+        or not re.fullmatch(r"[0-9a-f]{40}", commit)
+        or image != expected_image
+        or current.get("commit") != commit
+        or current.get("image") != image
+    ):
+        raise AdminError("storage rotation no longer matches the frozen release")
+    expected_rollback = f"{release['containerName']}-rollback-storage-{operation_id[:12]}"
+    if marker.get("rollbackContainer") != expected_rollback:
+        raise AdminError("release contains an invalid storage rotation rollback name")
+    return marker
+
+
+def require_no_pending_storage_rotation(release: dict[str, Any]) -> None:
+    if release.get("storageRotation") is not None:
+        raise AdminError(
+            "storage credential rotation is pending; rerun rotate-app-storage before this operation"
+        )
+
+
+def restore_prepared_rotation_container(
+    canonical: str,
+    previous_name: str,
+    operation_id: str,
+    release: dict[str, Any],
+    profile: dict[str, Any],
+) -> None:
+    """Best-effort restore the old process while its credential is still current."""
+
+    if container_exists(canonical):
+        assert_managed_container(canonical, release["applicationSlug"], profile)
+        if container_storage_rotation_operation(canonical) == operation_id:
+            run(["docker", "rm", "--force", canonical], check=False)
+    if container_exists(previous_name):
+        assert_managed_container(previous_name, release["applicationSlug"], profile)
+        if not container_exists(canonical):
+            rollback_container(canonical, None, previous_name, release, profile)
+    elif container_exists(canonical) and not container_running(canonical):
+        run(["docker", "start", canonical])
+        wait_for_health(release["port"], release["hostname"])
+
+
+def cmd_rotate_app_storage(args: argparse.Namespace, paths: Paths = PATHS) -> dict[str, Any]:
+    """Durably prepare, activate, then commit an OSS application token rotation."""
+
+    slug = validate_slug(args.application_slug)
+    requested_grace = args.grace_seconds
+    requested_health_timeout = args.health_timeout
+    if (
+        isinstance(requested_grace, bool)
+        or not isinstance(requested_grace, int)
+        or not 60 <= requested_grace <= 86400
+    ):
+        raise AdminError("storage rotation grace must be between 60 and 86400 seconds")
+    if (
+        isinstance(requested_health_timeout, bool)
+        or not isinstance(requested_health_timeout, int)
+        or not 1 <= requested_health_timeout <= 300
+    ):
+        raise AdminError("storage rotation health timeout must be between 1 and 300 seconds")
+    if requested_grace < requested_health_timeout + 60:
+        raise AdminError("storage rotation grace must exceed the health timeout by at least 60 seconds")
+
+    with locked(paths):
+        profile = load_runtime(paths)
+        release = load_release(slug, profile, paths)
+        if release["storageMode"] != OSS_STORAGE_MODE:
+            raise AdminError("storage credential rotation is only available for OSS releases")
+        current = release.get("current")
+        if not isinstance(current, dict):
+            raise AdminError("application has no frozen healthy release to recreate")
+
+        marker = validated_storage_rotation_marker(release, profile)
+        canonical = release["containerName"]
+        if marker is None:
+            commit = current.get("commit")
+            image = current.get("image")
+            expected_image = f"zhuojian/{profile['enterpriseKey']}/{slug}:{commit}"
+            if (
+                not isinstance(commit, str)
+                or not re.fullmatch(r"[0-9a-f]{40}", commit)
+                or image != expected_image
+            ):
+                raise AdminError("current release does not contain an exact managed SHA image")
+            if run(["docker", "image", "inspect", image], check=False).returncode:
+                raise AdminError("current frozen image is not present; refusing storage rotation")
+            if not container_exists(canonical):
+                raise AdminError("current managed container is missing; refusing storage rotation")
+            assert_managed_container(canonical, slug, profile)
+            if not container_running(canonical):
+                raise AdminError("current managed container is stopped; refusing storage rotation")
+            wait_for_health(release["port"], release["hostname"], timeout=10)
+            operation_id = secrets.token_hex(16)
+            previous_name = f"{canonical}-rollback-storage-{operation_id[:12]}"
+            if container_exists(previous_name):
+                raise AdminError(f"storage rotation rollback container name collision: {previous_name}")
+            marker = {
+                "operationId": operation_id,
+                "phase": "preparing",
+                "graceSeconds": requested_grace,
+                "healthTimeout": requested_health_timeout,
+                "commit": commit,
+                "image": image,
+                "rollbackContainer": previous_name,
+                "requestedAt": utc_now(),
+            }
+            release["storageRotation"] = marker
+            release["updatedAt"] = utc_now()
+            atomic_json(release_path(slug, paths), release, 0o640)
+        else:
+            operation_id = marker["operationId"]
+            previous_name = marker["rollbackContainer"]
+            commit = marker["commit"]
+            image = marker["image"]
+
+        grace_seconds = marker["graceSeconds"]
+        health_timeout = marker["healthTimeout"]
+        if run(["docker", "image", "inspect", image], check=False).returncode:
+            raise AdminError("frozen rotation image is missing; pending rotation was preserved")
+
+        storage_env = prepare_storage_rotation(
+            slug,
+            operation_id,
+            grace_seconds,
+            profile,
+            paths,
+        )
+        if str(storage_env) != release.get("storageEnvFile"):
+            raise AdminError("prepared storage environment does not match the frozen release")
+        if marker["phase"] == "preparing":
+            marker["phase"] = "prepared"
+            release["updatedAt"] = utc_now()
+            atomic_json(release_path(slug, paths), release, 0o640)
+
+        if marker.get("phase") != "committed":
+            marker["phase"] = "switching"
+            release["updatedAt"] = utc_now()
+            atomic_json(release_path(slug, paths), release, 0o640)
+            try:
+                previous_exists = container_exists(previous_name)
+                if previous_exists:
+                    assert_managed_container(previous_name, slug, profile)
+                    if container_running(previous_name):
+                        raise AdminError("storage rotation rollback container is unexpectedly running")
+
+                canonical_exists = container_exists(canonical)
+                current_operation = None
+                if canonical_exists:
+                    assert_managed_container(canonical, slug, profile)
+                    current_operation = container_storage_rotation_operation(canonical)
+
+                if current_operation == operation_id:
+                    if not container_running(canonical):
+                        run(["docker", "start", canonical])
+                else:
+                    if previous_exists:
+                        if canonical_exists:
+                            raise AdminError("canonical container is not the prepared rotation container")
+                    else:
+                        if not canonical_exists:
+                            raise AdminError("both current and rollback containers are missing")
+                        if container_running(canonical):
+                            run(["docker", "stop", "--time", "30", canonical])
+                        run(["docker", "rename", canonical, previous_name])
+                        previous_exists = True
+                    start_container(
+                        canonical,
+                        image,
+                        release,
+                        slug,
+                        profile,
+                        paths,
+                        storage_rotation_operation_id=operation_id,
+                    )
+
+                wait_for_health(release["port"], release["hostname"], health_timeout)
+                marker["phase"] = "healthy"
+                release["status"] = "healthy"
+                release["updatedAt"] = utc_now()
+                atomic_json(release_path(slug, paths), release, 0o640)
+            except BaseException as exc:
+                with contextlib.suppress(BaseException):
+                    restore_prepared_rotation_container(
+                        canonical,
+                        previous_name,
+                        operation_id,
+                        release,
+                        profile,
+                    )
+                    marker["phase"] = "prepared"
+                    release["status"] = "healthy"
+                    release["updatedAt"] = utc_now()
+                    atomic_json(release_path(slug, paths), release, 0o640)
+                raise AdminError(
+                    "replacement container did not become healthy; the old token remains current "
+                    "and the durable rotation can be resumed by rerunning rotate-app-storage"
+                ) from exc
+        else:
+            if not container_exists(canonical):
+                raise AdminError("committed storage rotation has no canonical container")
+            assert_managed_container(canonical, slug, profile)
+            if container_storage_rotation_operation(canonical) != operation_id:
+                raise AdminError("committed storage rotation container identity does not match")
+            if not container_running(canonical):
+                run(["docker", "start", canonical])
+            wait_for_health(release["port"], release["hostname"], health_timeout)
+
+        try:
+            grace_until_epoch = commit_storage_rotation(
+                slug, operation_id, profile, paths
+            )
+        except BaseException as exc:
+            raise AdminError(
+                "replacement container is healthy but storage rotation commit is pending; "
+                "rerun rotate-app-storage with the same application slug"
+            ) from exc
+        marker["phase"] = "committed"
+        marker["graceUntil"] = grace_until_epoch
+        release["updatedAt"] = utc_now()
+        atomic_json(release_path(slug, paths), release, 0o640)
+
+        if container_exists(previous_name):
+            assert_managed_container(previous_name, slug, profile)
+            if container_running(previous_name):
+                raise AdminError("refusing to remove a running storage rotation rollback container")
+            run(["docker", "rm", previous_name])
+
+        committed_at = dt.datetime.fromtimestamp(
+            grace_until_epoch - grace_seconds, dt.timezone.utc
+        )
+        grace_until = dt.datetime.fromtimestamp(grace_until_epoch, dt.timezone.utc)
+        release.pop("storageRotation", None)
+        release["status"] = "healthy"
+        release["updatedAt"] = utc_now()
+        release["storageCredentialRotatedAt"] = committed_at.isoformat(timespec="seconds")
+        atomic_json(release_path(slug, paths), release, 0o640)
+
+    return {
+        "ok": True,
+        "applicationSlug": slug,
+        "commit": commit,
+        "image": image,
+        "storageCredentialRotatedAt": committed_at.isoformat(timespec="seconds"),
+        "graceUntil": grace_until.isoformat(timespec="seconds"),
+        "status": "healthy",
+    }
+
+
 def cmd_rollback(args: argparse.Namespace, paths: Paths = PATHS) -> dict[str, Any]:
     slug = validate_slug(args.application_slug)
     with locked(paths):
         profile = load_runtime(paths)
         release = load_release(slug, profile, paths)
+        require_no_pending_storage_rotation(release)
         current = release.get("current")
         history = list(release.get("history") or [])
         if not current or not history:
@@ -1273,6 +2036,7 @@ def cmd_restore(args: argparse.Namespace, paths: Paths = PATHS) -> dict[str, Any
     with locked(paths):
         profile = load_runtime(paths)
         release = load_release(slug, profile, paths)
+        require_no_pending_storage_rotation(release)
         app_backup = (paths.backups / slug).resolve()
         archive = Path(args.archive).resolve()
         if archive.parent != app_backup:
@@ -1330,8 +2094,17 @@ def cmd_doctor(args: argparse.Namespace, paths: Paths = PATHS) -> dict[str, Any]
         "credential": credential_metadata(paths),
         "directories": {},
         "commands": {},
+        "uploadLock": None,
     }
-    for path in (paths.repositories, paths.deployments, paths.data, paths.backups, paths.apps_env, paths.nginx):
+    for path in (
+        paths.repositories,
+        paths.deployments,
+        paths.data,
+        paths.backups,
+        paths.apps_env,
+        paths.storage_apps,
+        paths.nginx,
+    ):
         try:
             assert_directory(path)
             checks["directories"][str(path)] = True
@@ -1340,6 +2113,10 @@ def cmd_doctor(args: argparse.Namespace, paths: Paths = PATHS) -> dict[str, Any]
     for command in ("git", "docker", "nginx", "certbot", "systemctl"):
         checks["commands"][command] = shutil.which(command) is not None
     checks["disk"] = disk_state(paths)
+    try:
+        checks["uploadLock"] = verify_upload_lock(paths)
+    except AdminError as exc:
+        checks["uploadLock"] = str(exc)
     checks["managementAccess"] = profile.get("network", {}).get("managementAccess")
     storage_mode = default_storage_mode(profile)
     checks["storage"] = {"defaultMode": storage_mode, "gatewayReady": None}
@@ -1353,6 +2130,8 @@ def cmd_doctor(args: argparse.Namespace, paths: Paths = PATHS) -> dict[str, Any]
         checks["credential"]["secure"]
         and all(value is True for value in checks["directories"].values())
         and all(checks["commands"].values())
+        and isinstance(checks["uploadLock"], dict)
+        and checks["uploadLock"].get("secure") is True
         and checks["storage"]["gatewayReady"] in {None, True}
     )
     return checks
@@ -1362,6 +2141,7 @@ def cmd_preflight(args: argparse.Namespace, paths: Paths = PATHS) -> dict[str, A
     """Read-only deploy preflight; never allocates a port or creates app state."""
     slug = validate_slug(args.application_slug)
     profile = load_runtime(paths)
+    verify_upload_lock(paths)
     names = expected_names(slug, profile, paths)
     commit, _ = git_release(Path(names["projectDir"]))
     state = disk_state(paths)
@@ -1500,6 +2280,14 @@ def parser() -> argparse.ArgumentParser:
     deploy.add_argument("--email")
     deploy.add_argument("--health-timeout", type=int, default=60)
     deploy.set_defaults(func=cmd_deploy)
+    rotate_storage = sub.add_parser(
+        "rotate-app-storage",
+        help="rotate one OSS credential and health-check the frozen release on a new container",
+    )
+    rotate_storage.add_argument("application_slug")
+    rotate_storage.add_argument("--grace-seconds", type=int, default=300)
+    rotate_storage.add_argument("--health-timeout", type=int, default=60)
+    rotate_storage.set_defaults(func=cmd_rotate_app_storage)
     rollback = sub.add_parser("rollback", help="switch to an exact previously healthy image")
     rollback.add_argument("application_slug")
     rollback.add_argument("--commit")

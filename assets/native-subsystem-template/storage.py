@@ -13,7 +13,9 @@ import io
 import json
 import mimetypes
 import os
+import stat
 import tempfile
+import time
 from abc import ABC, abstractmethod
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
@@ -27,6 +29,7 @@ from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_ope
 
 CHUNK_SIZE = 1024 * 1024
 MAX_STORAGE_KEY_BYTES = 1024
+LOCAL_STAGING_DIRECTORY = ".zhuojian-upload-staging"
 
 
 class StorageError(RuntimeError):
@@ -85,6 +88,8 @@ def normalize_storage_key(storage_key: str) -> str:
     parts = storage_key.split("/")
     if any(part in {"", ".", ".."} for part in parts):
         raise InvalidStorageKey("storageKey cannot contain empty, '.' or '..' segments")
+    if parts[0] == LOCAL_STAGING_DIRECTORY:
+        raise InvalidStorageKey("storageKey uses a runtime-reserved namespace")
     return "/".join(parts)
 
 
@@ -210,6 +215,23 @@ class LocalStorageAdapter(StorageAdapter):
             raise InvalidStorageKey("storageKey resolves outside the configured storage root") from exc
         return key, parent / candidate.name
 
+    def _staging_directory(self, *, create: bool) -> Path | None:
+        staging = self.root / LOCAL_STAGING_DIRECTORY
+        try:
+            if create:
+                staging.mkdir(mode=0o700, exist_ok=True)
+            elif not staging.exists() and not staging.is_symlink():
+                return None
+            if staging.is_symlink() or not staging.is_dir():
+                raise StorageUnavailableError("local upload staging path is unsafe")
+            resolved = staging.resolve(strict=True)
+            resolved.relative_to(self.root)
+            return resolved
+        except StorageError:
+            raise
+        except (OSError, ValueError) as exc:
+            raise StorageUnavailableError("local upload staging path is unavailable") from exc
+
     def put(
         self,
         storage_key: str,
@@ -218,11 +240,13 @@ class LocalStorageAdapter(StorageAdapter):
         content_type: str | None = None,
     ) -> StorageStat:
         key, destination = self._path_for_write(storage_key)
+        staging = self._staging_directory(create=True)
+        assert staging is not None
         temporary_path: Path | None = None
         try:
             with _prepared_payload(data) as (stream, size, digest):
                 with tempfile.NamedTemporaryFile(
-                    mode="w+b", prefix=".upload-", dir=destination.parent, delete=False
+                    mode="w+b", prefix=".upload-", dir=staging, delete=False
                 ) as temporary:
                     temporary_path = Path(temporary.name)
                     while True:
@@ -238,6 +262,7 @@ class LocalStorageAdapter(StorageAdapter):
                     os.chmod(destination, 0o600)
                 except OSError:
                     pass
+
             return StorageStat(
                 storage_key=key,
                 backend=self.backend,
@@ -256,6 +281,32 @@ class LocalStorageAdapter(StorageAdapter):
                     temporary_path.unlink(missing_ok=True)
                 except OSError:
                     pass
+
+    def cleanup_stale_uploads(self, older_than_seconds: int = 1800) -> int:
+        """Remove only adapter-owned temporary files while the host upload lock is held."""
+
+        removed = 0
+        cutoff = time.time() - max(0, older_than_seconds)
+        try:
+            staging = self._staging_directory(create=False)
+            if staging is None:
+                return 0
+            for candidate in staging.glob(".upload-*"):
+                try:
+                    info = candidate.lstat()
+                    if not stat.S_ISREG(info.st_mode) or candidate.is_symlink():
+                        continue
+                    if info.st_mtime > cutoff:
+                        continue
+                    if candidate.resolve(strict=True).parent != staging:
+                        continue
+                    candidate.unlink()
+                    removed += 1
+                except (FileNotFoundError, ValueError):
+                    continue
+        except OSError as exc:
+            raise StorageUnavailableError("local upload cleanup failed") from exc
+        return removed
 
     def open(self, storage_key: str) -> BinaryIO:
         key, path = self._path_for_read(storage_key)
@@ -310,7 +361,7 @@ class _RejectRedirects(HTTPRedirectHandler):
 class GatewayStorageAdapter(StorageAdapter):
     backend = "oss-gateway"
 
-    def __init__(self, base_url: str, token: str, *, timeout: float = 30.0):
+    def __init__(self, base_url: str, token: str, *, timeout: float = 900.0):
         self.base_url = self._validate_base_url(base_url)
         if not token or not token.strip():
             raise StorageConfigurationError("FILE_STORAGE_TOKEN is required for oss-gateway storage")
@@ -473,7 +524,7 @@ def storage_for_backend(
         base_url = env.get("FILE_STORAGE_GATEWAY_URL") or env.get("STORAGE_GATEWAY_URL") or ""
         token = env.get("FILE_STORAGE_TOKEN") or env.get("STORAGE_PROJECT_TOKEN") or ""
         try:
-            timeout = float(env.get("FILE_STORAGE_GATEWAY_TIMEOUT_SECONDS") or "30")
+            timeout = float(env.get("FILE_STORAGE_GATEWAY_TIMEOUT_SECONDS") or "900")
         except ValueError as exc:
             raise StorageConfigurationError(
                 "FILE_STORAGE_GATEWAY_TIMEOUT_SECONDS must be a number"

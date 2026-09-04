@@ -12,11 +12,14 @@ override its slug or OSS prefix.
   containing the company OSS AccessKey.
 - `/var/lib/zhuojian-storage-gateway/registry.sqlite3` — root-owned mode `0600`;
   application state and token hashes only.
-- `/etc/zhuojian/apps/<slug>.storage.env` — root-owned mode `0600`; generated
+- `/etc/zhuojian/storage-apps/<slug>.storage.env` — root-owned mode `0600`; generated
   application credential consumed by Docker Compose as an `env_file`.
-- Docker network `zhuojian-storage` — the gateway is not published on a host or
-  public port. Application containers join this network to reach
-  `http://zhuojian-storage-gateway:8080`.
+- Docker network `zhuojian-storage` — gateway management only; it is not
+  published on a host or public port and application containers never join it.
+- Docker network `zhuojian-storage-<slug>` — one Runtime-managed private bridge
+  per application. Only that application's canonical container (or a stopped,
+  exactly labeled rollback container) and the gateway may join it. Applications
+  reach `http://zhuojian-storage-gateway:8080` through their own bridge.
 
 The root secret file is a plain `KEY=VALUE` file and is never sourced as shell:
 
@@ -66,10 +69,14 @@ An ownership marker prevents the installer from taking over a non-empty install
 directory it did not create. On first installation it also refuses conflicting
 wrapper, container, network, or image names that do not carry the expected
 Compose identity. It does not prune images, remove volumes, delete objects, or
-remove unrelated containers. If an update fails its health check, it attempts to
-retag and restart the previous healthy image with the current Compose file. This
-is an image rollback, not a rollback of installed source files or persistent
-registry data; failed-build cache and the rejected image may remain for diagnosis.
+remove unrelated containers. Before legacy Secret migration begins, a failed
+build, switch, network reattachment, or health check restores both the exact
+previous Compose file and the previous healthy image. Migration is the explicit
+forward-only boundary: after it may have atomically moved a Secret, the installer
+keeps the new gateway/Compose pair and idempotently resumes migration instead of
+combining the new Secret layout with an incompatible old image. Persistent
+registry data is never rolled back; failed-build cache and a rejected image may
+remain for diagnosis.
 
 The install-time check is local service health; it does not claim that the OSS
 policy or network path works. Complete the real object-storage acceptance probe
@@ -82,8 +89,12 @@ sudo zhuojian-storage-gateway-admin probe \
 ```
 
 The probe creates two temporary application identities, exercises real
-put/get/delete operations and cross-application isolation, then revokes the
-temporary credentials and removes their exact test objects.
+put/get/delete operations and cross-application isolation, proves anonymous
+reads of a real object are denied, and proves the RAM identity cannot
+list/read/write/delete outside `apps/*`. It then revokes the temporary
+credentials and removes their exact test objects. A successful probe therefore
+means the live Bucket is private at the object boundary as well as correctly
+scoped for the gateway.
 
 The wrapper runs the management command inside the already-running private
 gateway container, where the registry and application env directory are mounted.
@@ -96,7 +107,7 @@ zhuojian-storage-gateway-admin ensure-app --application-slug example-app
 
 It prints only the slug, state, env path, and whether the existing credential was
 reused. It writes the credential directly to
-`/etc/zhuojian/apps/example-app.storage.env` using an atomic replace and mode
+`/etc/zhuojian/storage-apps/example-app.storage.env` using an atomic replace and mode
 `0600`; it never returns the credential to the caller. The generated file uses
 the v1 names `FILE_STORAGE_DRIVER=oss-gateway`,
 `FILE_STORAGE_GATEWAY_URL`, and `FILE_STORAGE_TOKEN`. Two legacy aliases are
@@ -105,21 +116,37 @@ temporarily emitted for older templates.
 Other root-only lifecycle commands are:
 
 ```console
+# Compatibility-only one-shot operation; Runtime does not use this for online rotation.
 zhuojian-storage-gateway-admin rotate --application-slug example-app --grace-seconds 300
+zhuojian-storage-gateway-admin prepare-rotate --application-slug example-app --operation-id <durable-id> --grace-seconds 300
+zhuojian-storage-gateway-admin commit-rotate --application-slug example-app --operation-id <same-durable-id>
 zhuojian-storage-gateway-admin suspend --application-slug example-app
+zhuojian-storage-gateway-admin resume --application-slug example-app
 zhuojian-storage-gateway-admin revoke --application-slug example-app
 ```
 
-Rotation writes the new application env atomically. The previous token remains
-valid only for the requested grace interval. Suspension denies all tokens without
-deleting them. Revocation invalidates all tokens and removes the exact app env
-file; it never deletes OSS objects or a prefix.
+Runtime performs online rotation as a durable two-phase operation. `prepare-rotate`
+idempotently writes and registers the new token but does not expire any old token.
+The root-only env carries the operation id so the same call can recover a crash
+between its atomic file replacement and SQLite commit. Runtime persists that id,
+recreates and health-checks the frozen application image, and only then calls the
+idempotent `commit-rotate`; the old-token grace interval starts at commit time.
+A lost response, process kill, or reboot is resumed with the same operation id.
+The compatibility `rotate` command performs both phases immediately and therefore
+must not replace Runtime's online workflow. Rotation refuses suspended or revoked
+applications. Suspension denies all tokens without deleting them; `resume`
+reactivates only a suspended app whose installed credential is still valid. A
+revoked app can never be resumed.
+Revocation invalidates all tokens and removes the exact app env file; it never
+deletes OSS objects or a prefix.
 
 ## Object API
 
 - `GET /healthz` and `GET /v1/health` — unauthenticated local health.
-- `PUT /v1/objects/<relative-key>` — streamed upload, returns key, size, SHA-256,
-  and ETag.
+- `PUT /v1/objects/<relative-key>` — bounded temporary buffering followed by an
+  OSS upload, returning key, size, SHA-256, and ETag. The default accepts at
+  most 512 MiB per object, runs at most two upload buffers concurrently, and
+  preserves at least 5 GiB of ECS disk.
 - `GET /v1/objects/<relative-key>` — streamed download.
 - `HEAD /v1/objects/<relative-key>` — `Content-Length`, `Content-Type`, `ETag`,
   and `X-Storage-Sha256` when available.

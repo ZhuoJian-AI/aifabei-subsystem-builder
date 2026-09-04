@@ -37,8 +37,26 @@ def build_parser() -> argparse.ArgumentParser:
     rotate.add_argument("--application-slug", required=True)
     rotate.add_argument("--grace-seconds", type=int, default=300)
 
+    prepare_rotate = subparsers.add_parser(
+        "prepare-rotate",
+        help="idempotently install a new credential without expiring the old one",
+    )
+    prepare_rotate.add_argument("--application-slug", required=True)
+    prepare_rotate.add_argument("--operation-id", required=True)
+    prepare_rotate.add_argument("--grace-seconds", type=int, default=300)
+
+    commit_rotate = subparsers.add_parser(
+        "commit-rotate",
+        help="idempotently begin expiry of old credentials for a prepared rotation",
+    )
+    commit_rotate.add_argument("--application-slug", required=True)
+    commit_rotate.add_argument("--operation-id", required=True)
+
     suspend = subparsers.add_parser("suspend", help="temporarily deny an app credential")
     suspend.add_argument("--application-slug", required=True)
+
+    resume = subparsers.add_parser("resume", help="reactivate a suspended app credential")
+    resume.add_argument("--application-slug", required=True)
 
     revoke = subparsers.add_parser("revoke", help="permanently revoke an app credential")
     revoke.add_argument("--application-slug", required=True)
@@ -84,12 +102,53 @@ def main(argv: list[str] | None = None) -> int:
                 env_path=result.env_path,
                 reused=False,
             )
+        elif args.command == "prepare-rotate":
+            result = registry.prepare_rotation(
+                args.application_slug,
+                args.apps_env_dir,
+                args.gateway_url,
+                operation_id=args.operation_id,
+                grace_seconds=args.grace_seconds,
+            )
+            _print_safe_result(
+                action="prepare-rotate",
+                slug=result.slug,
+                status="active",
+                env_path=result.env_path,
+                reused=result.reused,
+                operation_id=result.operation_id,
+                phase=result.phase,
+                grace_until=result.grace_until,
+            )
+        elif args.command == "commit-rotate":
+            result = registry.commit_rotation(
+                args.application_slug,
+                args.apps_env_dir,
+                operation_id=args.operation_id,
+            )
+            _print_safe_result(
+                action="commit-rotate",
+                slug=result.slug,
+                status="active",
+                env_path=result.env_path,
+                reused=result.reused,
+                operation_id=result.operation_id,
+                phase=result.phase,
+                grace_until=result.grace_until,
+            )
         elif args.command == "suspend":
             registry.suspend_app(args.application_slug)
             _print_safe_result(
                 action="suspend",
                 slug=args.application_slug,
                 status="suspended",
+            )
+        elif args.command == "resume":
+            registry.resume_app(args.application_slug, args.apps_env_dir)
+            _print_safe_result(
+                action="resume",
+                slug=args.application_slug,
+                status="active",
             )
         elif args.command == "revoke":
             registry.revoke_app(args.application_slug, args.apps_env_dir)
@@ -158,7 +217,9 @@ def probe_gateway(
     payload_b = f"alphabet-storage-probe-b:{run_id}".encode()
     provisioned: list[str] = []
     tokens: dict[str, str] = {}
-    cleanup_failed = False
+    cleanup_errors: list[str] = []
+    primary_error: BaseException | None = None
+    primary_traceback = None
     opener = build_opener(ProxyHandler({}), _RejectRedirects())
 
     try:
@@ -168,6 +229,11 @@ def probe_gateway(
             tokens[slug] = _read_generated_token(result.env_path)
 
         _request_object(opener, gateway_url, tokens[slugs[0]], "PUT", relative_key, payload_a, 201)
+        _assert_anonymous_read_denied(
+            opener,
+            credentials,
+            f"{settings.root_prefix}/{slugs[0]}/{relative_key}",
+        )
         received_a = _request_object(
             opener, gateway_url, tokens[slugs[0]], "GET", relative_key, None, 200
         )
@@ -188,6 +254,9 @@ def probe_gateway(
         for slug in slugs:
             _request_object(opener, gateway_url, tokens[slug], "DELETE", relative_key, None, 204)
             _request_object(opener, gateway_url, tokens[slug], "GET", relative_key, None, 404)
+    except BaseException as exc:
+        primary_error = exc
+        primary_traceback = exc.__traceback__
     finally:
         for slug in provisioned:
             token = tokens.get(slug)
@@ -196,15 +265,20 @@ def probe_gateway(
                     _request_object(
                         opener, gateway_url, token, "DELETE", relative_key, None, {204, 404}
                     )
-                except GatewayProbeError:
-                    pass
+                except Exception:
+                    cleanup_errors.append(f"object:{slug}")
             try:
                 registry.revoke_app(slug, apps_env_dir)
-            except RegistryError:
-                cleanup_failed = True
+            except Exception:
+                cleanup_errors.append(f"credential:{slug}")
 
-    if cleanup_failed:
-        raise GatewayProbeError("temporary application credentials could not be revoked")
+    if cleanup_errors:
+        raise GatewayProbeError(
+            "temporary probe cleanup failed; administrator cleanup is required for: "
+            + ", ".join(cleanup_errors)
+        ) from primary_error
+    if primary_error is not None:
+        raise primary_error.with_traceback(primary_traceback)
 
     return {
         "ok": True,
@@ -218,12 +292,20 @@ def probe_gateway(
             "twoApplicationIsolation": True,
             "temporaryCredentialsRevoked": True,
             "outsidePrefixDenied": True,
+            "anonymousReadDenied": True,
         },
     }
 
 
 def _assert_outside_prefix_denied(credentials: OssCredentials, run_id: str) -> None:
-    """Verify the RAM identity cannot list or read outside ``apps/*``."""
+    """Verify list/read/write/delete are denied outside ``apps/*``.
+
+    The write probe deliberately carries an invalid Content-MD5.  A correctly
+    scoped identity is rejected with 403 before object validation.  An
+    over-broad identity reaches request validation and returns another status,
+    but OSS cannot commit the invalid payload, so this negative test never
+    leaves an out-of-scope object behind.
+    """
 
     try:
         import oss2
@@ -241,24 +323,67 @@ def _assert_outside_prefix_denied(credentials: OssCredentials, run_id: str) -> N
             )
         bucket = oss2.Bucket(auth, credentials.endpoint, credentials.bucket)
         outside_prefix = f"zhuojian-policy-probe/{run_id}/"
+        outside_key = f"{outside_prefix}missing.bin"
         checks = (
-            lambda: bucket.list_objects_v2(prefix=outside_prefix, max_keys=1),
-            lambda: bucket.head_object(f"{outside_prefix}missing.bin"),
+            ("list", lambda: bucket.list_objects_v2(prefix=outside_prefix, max_keys=1)),
+            ("read", lambda: bucket.head_object(outside_key)),
+            ("delete", lambda: bucket.delete_object(outside_key)),
+            (
+                "write",
+                lambda: bucket.put_object(
+                    outside_key,
+                    b"policy-probe",
+                    headers={"Content-MD5": "AAAAAAAAAAAAAAAAAAAAAA=="},
+                ),
+            ),
         )
-        for operation in checks:
+        for operation_name, operation in checks:
             try:
                 operation()
             except Exception as exc:
                 if getattr(exc, "status", None) == 403:
                     continue
                 raise GatewayProbeError(
-                    "OSS policy denial probe could not confirm the outside-prefix boundary"
+                    "OSS policy denial probe could not confirm that "
+                    f"outside-prefix {operation_name} is denied"
                 ) from exc
-            raise GatewayProbeError("OSS credential is not restricted to the apps prefix")
+            raise GatewayProbeError(
+                f"OSS credential permits outside-prefix {operation_name}"
+            )
     except GatewayProbeError:
         raise
     except Exception as exc:
         raise GatewayProbeError("OSS policy denial probe could not run") from exc
+
+
+def _assert_anonymous_read_denied(
+    opener, credentials: OssCredentials, object_key: str
+) -> None:
+    """Prove a real, existing probe object cannot be read without a signature."""
+
+    endpoint = urlsplit(credentials.endpoint)
+    host = (endpoint.hostname or "").lower()
+    if endpoint.scheme != "https" or not host:
+        raise GatewayProbeError("OSS endpoint is invalid for the public-access probe")
+    encoded_key = "/".join(quote(part, safe="-._~") for part in object_key.split("/"))
+    request = Request(
+        f"https://{credentials.bucket}.{host}/{encoded_key}",
+        headers={"Range": "bytes=0-0", "User-Agent": "zhuojian-storage-probe/1"},
+        method="GET",
+    )
+    try:
+        with opener.open(request, timeout=20) as response:
+            status_code = response.status
+            response.read(1)
+    except HTTPError as exc:
+        status_code = exc.code
+        exc.close()
+    except (URLError, TimeoutError, OSError) as exc:
+        raise GatewayProbeError("anonymous OSS access probe could not run") from exc
+    if status_code != 403:
+        raise GatewayProbeError(
+            f"anonymous OSS object read returned HTTP {status_code}; expected 403"
+        )
 
 
 def _read_generated_token(path: Path) -> str:
@@ -328,6 +453,9 @@ def _print_safe_result(
     status: str,
     env_path: Path | None = None,
     reused: bool | None = None,
+    operation_id: str | None = None,
+    phase: str | None = None,
+    grace_until: int | None = None,
 ) -> None:
     result: dict[str, object] = {
         "ok": True,
@@ -339,6 +467,12 @@ def _print_safe_result(
         result["envPath"] = str(env_path)
     if reused is not None:
         result["reused"] = reused
+    if operation_id is not None:
+        result["operationId"] = operation_id
+    if phase is not None:
+        result["phase"] = phase
+    if grace_until is not None:
+        result["graceUntil"] = grace_until
     # By construction this payload can never contain a plaintext credential.
     print(json.dumps(result, ensure_ascii=False, sort_keys=True))
 

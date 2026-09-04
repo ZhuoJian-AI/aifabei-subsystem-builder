@@ -6,14 +6,16 @@
   "required": ["deliveryId", "sourceApplicationSlug", "event"],
   "properties": {
     "deliveryId": {"type": "string", "minLength": 8, "maxLength": 160},
-    "sourceApplicationSlug": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]*$"},
+    "sourceApplicationSlug": {"type": "string", "minLength": 1, "maxLength": 160, "pattern": "^[a-z0-9][a-z0-9._-]*$"},
     "event": {
       "type": "object", "additionalProperties": true,
       "required": ["eventId", "eventType", "enterpriseKey", "moduleKey", "entityType", "entityId", "occurredAt", "payload"],
       "properties": {
-        "eventId": {"type": "string", "minLength": 8}, "eventType": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]*$"},
-        "enterpriseKey": {"type": "string"}, "moduleKey": {"type": "string"}, "entityType": {"type": "string"},
-        "entityId": {"type": "string"}, "occurredAt": {"type": "string", "format": "date-time"}, "payload": {"type": "object"}
+        "eventId": {"type": "string", "minLength": 8, "maxLength": 160}, "eventType": {"type": "string", "maxLength": 160, "pattern": "^[a-z0-9][a-z0-9._-]*$"},
+        "enterpriseKey": {"type": "string", "maxLength": 160, "pattern": "^[a-z0-9][a-z0-9._-]*$"},
+        "moduleKey": {"type": "string", "maxLength": 160, "pattern": "^[a-z0-9][a-z0-9._-]*$"},
+        "entityType": {"type": "string", "maxLength": 160, "pattern": "^[a-z0-9][a-z0-9._-]*$"},
+        "entityId": {"type": "string", "minLength": 1, "maxLength": 500}, "occurredAt": {"type": "string", "format": "date-time"}, "payload": {"type": "object"}
       }
     }
   }

@@ -98,8 +98,8 @@ def main() -> int:
             failures.append("stopUploadUsedPercent 必须是 1–99 的整数")
         if isinstance(warning, int) and isinstance(stop, int) and warning >= stop:
             failures.append("warningUsedPercent 必须小于 stopUploadUsedPercent")
-        if not isinstance(minimum, (int, float)) or minimum <= 0:
-            failures.append("minimumFreeGiB 必须大于 0")
+        if isinstance(minimum, bool) or not isinstance(minimum, int) or minimum < 1:
+            failures.append("minimumFreeGiB 必须是大于或等于 1 的整数")
         if isinstance(capabilities, dict) and capabilities.get("objectStorage") is True:
             failures.append("本地模式下 capabilities.objectStorage 必须为 false")
     elif provider == "aliyun-oss" and mode == "oss-gateway":

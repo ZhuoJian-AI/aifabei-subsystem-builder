@@ -9,7 +9,7 @@ description: "让管理员 AI 一次性初始化 Alphabet 企业 ECS 和可选�
 
 用户只需要说明业务、参与部门和期望结果。不要要求用户选择框架、写命令、配置 Docker/Nginx、注册 GitHub 或使用 Coolify；这些由 AI 完成，并用业务语言汇报。
 
-严格区分“管理员首次初始化”和“业务 AI 日常使用”。管理员首次初始化可以使用公网 SSH 或已经登录的云控制台，并按 [SSH、VPN 与代理访问](references/ssh-access.md) 验证至少一条业务连接路径。初始化完成后，业务负责人只需把服务器公网地址、root 账号和密码交给 Codex；AI 按 [ECS 首次接入](references/ecs-first-access.md) 自动尝试 SSH `22`、再尝试已配置的 SSH `443`。业务电脑已有 VPN 或本机代理时，AI 自行复用该网络路径；不得要求小白提供阿里云账号、控制台页面、RAM、密钥对或命令行操作。密码只在 SSH 交互提示中输入。
+严格区分“管理员首次初始化”和“业务 AI 日常使用”。管理员首次初始化可以使用公网 SSH 或已经登录的云控制台，并按 [SSH、VPN 与代理访问](references/ssh-access.md) 验证至少一条业务连接路径。初始化完成后，业务负责人只需在当前任务中把服务器公网地址、root 账号和密码交给 Codex；AI 按 [ECS 首次接入](references/ecs-first-access.md) 自动尝试 SSH `22`、再尝试已配置的 SSH `443`。业务电脑已有 VPN 或本机代理时，AI 自行复用该网络路径；不得要求小白提供阿里云账号、控制台页面、RAM、密钥对或命令行操作。AI 只在真正出现的 SSH 密码提示中转交密码，不把密码放进命令参数、脚本、文件、Git、日志或回复，也不在任务结束后另行保存。
 
 VPN 或代理只解决“网络能否到服务器”，不会改变 root 账号和密码。探测在出现密码提示前超时，不得误报为密码错误；只有服务端明确返回 `Permission denied` 才属于凭证失败。SSH `443` 与 HTTPS 复用是 `22` 受限时的可选回退，不是每台 ECS 的强制改造或交付门槛。
 
@@ -27,7 +27,7 @@ VPN 或代理只解决“网络能否到服务器”，不会改变 root 账号�
 
 模块业务数据始终留在模块自己的数据库。灼见只保存登记、Manifest、授权、Action 目录、审计、事件游标和必要索引；禁止直接连接模块数据库。
 
-用户上传或系统生成的 Excel、Word、PPT、PDF、图片、音视频、压缩包和其他持久文件不进入数据库或容器可写层。实际后端只由 `/etc/zhuojian/runtime.json` 决定：未完成 OSS 初始化时进入模块独立的 ECS 固定数据目录；管理员一次性验收企业 OSS 网关后，所有未来系统自动使用 `apps/<applicationSlug>/`，无需管理员预建文件夹或逐项目发令牌。已有本地系统保持原后端，除非另行执行带清单和校验的迁移。业务代码始终经过同一存储适配层并保存稳定 `storageKey`，使前端和业务接口在迁移时不变。负责人不需要了解阿里云、Bucket、RAM、AccessKey、项目令牌或服务器路径。完整规则及迁移步骤见 [Alphabet 文件存储与 OSS 迁移](references/object-storage.md)。
+用户上传或系统生成的 Excel、Word、PPT、PDF、图片、音视频、压缩包和其他持久文件不进入数据库或容器可写层。`/etc/zhuojian/runtime.json` 只决定**尚未初始化的新系统**采用哪种默认后端；第一次 `ensure-app` 会把实际选择冻结到该系统的 release 记录。未完成 OSS 初始化时进入模块独立的 ECS 固定数据目录；管理员一次性验收企业 OSS 网关后，后来新建的系统自动使用 `apps/<applicationSlug>/`，无需管理员预建文件夹或逐项目发令牌。Runtime 已纳管的系统继续使用 release 记录的 `local-managed` 或 `oss-gateway`；尚未纳管、使用 `signed-upload` 等旧方案的容器保持原样，完成专项审查和导入前不得直接交给 Runtime 更新。任何后端变化都必须由管理员另行执行带清单、校验和回滚点的显式迁移。业务代码始终经过同一存储适配层并保存稳定 `storageKey`，使前端和业务接口在迁移时不变。负责人不需要了解阿里云、Bucket、RAM、AccessKey、项目令牌或服务器路径。完整规则及迁移步骤见 [Alphabet 文件存储与 OSS 迁移](references/object-storage.md)。
 
 GitHub 和 Coolify 不属于本 Skill 的企业模块开发、部署或更新链路。源码以企业 ECS 上的本地 Git 仓库为准，Docker 运行模块，Nginx 提供域名和 HTTPS。若需异地备份，使用 ECS 快照或企业指定的备份位置，不把远程 Git 作为业务用户前置条件。
 
@@ -48,7 +48,7 @@ GitHub 和 Coolify 不属于本 Skill 的企业模块开发、部署或更新链
 
 根据用户现状自动选择，不把技术判断抛给小白：
 
-1. **管理员一次性初始化 ECS**：读取 [管理员与服务器初始化](references/admin-bootstrap.md)、[SSH、VPN 与代理访问](references/ssh-access.md) 和 [Alphabet 文件存储与 OSS 迁移](references/object-storage.md)，建立 Docker、本地 Git、Nginx、域名、安全规则、固定数据目录、磁盘阈值和备份，并验证 VPN 下的标准 SSH `22` 或可选的 HTTPS/SSH `443` 共用入口；再以本地模式运行 `scripts/provision_runtime.py` 安装最小权限登记凭证与无密钥环境档案。若管理员选择企业 OSS，随后安装文件网关并用真实对象读写与双应用隔离探针切换 Runtime 默认存储；禁止用布尔参数跳过验收。每台 ECS 和每套企业 OSS 只初始化一次；不接入 GitHub 或 Coolify。
+1. **管理员一次性初始化 ECS**：读取 [管理员与服务器初始化](references/admin-bootstrap.md)、[SSH、VPN 与代理访问](references/ssh-access.md) 和 [Alphabet 文件存储与 OSS 迁移](references/object-storage.md)，建立 Docker、本地 Git、Nginx、域名、安全规则、固定数据目录、磁盘阈值和备份，并先从业务实际使用的外部 Codex 验证 VPN 下的标准 SSH `22` 或可选的 HTTPS/SSH `443` 共用入口；再以本地模式运行 `scripts/provision_runtime.py`。该脚本会在请求平台签发前真实执行本地文件写入、读取、删除和磁盘余量检查，通过后才安装最小权限登记凭证与无密钥环境档案。若管理员选择企业 OSS，随后安装文件网关并用匿名读取拒绝、`apps/*` 边界拒绝、真实对象读写删除、双应用隔离和临时身份撤销探针切换 Runtime 默认存储；禁止用布尔参数跳过验收。每台 ECS 和每套企业 OSS 只初始化一次；不接入 GitHub 或 Coolify。
 2. **新建原生模块系统**：只有业务确实需要独立域名、数据库、故障隔离或发布周期时才选。读取 [原生聚合与扩展](references/native-aggregation.md)、[平台接入协议](references/platform-contract.md) 和 [ECS 直接发布](references/direct-ecs-deployment.md)，优先运行 `scripts/scaffold_subsystem.py` 建立标准骨架，再实现业务页面、数据库和 Action。
 3. **给现有系统增加子模块**：用户说“在这个模块里再加”“继续扩展当前系统”或新业务可沿用现有域名和数据库时优先选择。读取 [原生聚合与扩展](references/native-aggregation.md)，先运行 `scripts/inspect_subsystem.py --path <项目根目录> --json`；保留 `applicationSlug`、本地 Git、域名、接入密钥和数据卷，在同一 Manifest 的 `modules[]` 增加新的 `moduleKey`、页面和 Action。
 4. **修改已有子模块**：先运行 `scripts/inspect_subsystem.py --path <项目根目录> --json`，保留数据和现有能力，以兼容方式升级 Manifest 与业务代码，并部署到原域名。
@@ -67,7 +67,8 @@ GitHub 和 Coolify 不属于本 Skill 的企业模块开发、部署或更新链
 - 每个项目必须是本地 Git 仓库；发布前提交本次修改并保持工作树干净。不得因为没有 GitHub 而省略版本、回滚和变更审查。
 - 管理员交付的环境档案必须明确目标 ECS、域名后缀、资源限制、部署目录和登记凭证引用。业务 AI 不得把服务器密码、接入密钥或登记凭证写入 Git、日志或回复。
 - 业务需求只要出现附件、上传、下载、导入、导出、图片、音视频或办公文档，就自动实现统一存储适配层；不要询问负责人选择硬盘还是 OSS。读取环境档案：`local-managed` 时使用固定数据目录，`oss-gateway` 时使用文件网关。两种模式都未验证时只向管理员报告“文件存储待初始化”，不得让负责人登录阿里云、创建 RAM 或手工设置路径。
-- 业务 AI 不申请、填写、复制、读取或输出 Bucket、RAM AccessKey、网关 Secret 或项目令牌。它在项目首次干净提交后运行 `zhuojian-runtime ensure-app <applicationSlug>`；Runtime 在 OSS 模式下自动生成该系统身份并直接注入容器，在本地模式下自动建立固定数据目录。重复执行必须复用同一身份。若管理员已暂停或永久撤销该系统，命令必须失败而不是自动恢复。
+- 新系统的文件上传必须保留模板提供的精确 `Content-Length`、全 ECS 共享上传锁、双副本容量门禁、`uploading` 校验恢复与 `pending` 删除恢复。业务 AI 不得为了“支持流式上传”去掉这些状态和锁；对象操作与数据库提交之间发生超时或重启时，系统必须靠后台短超时、小批次任务自动收敛，不能依赖负责人保存原请求编号。
+- 业务 AI 不申请、填写、复制或输出 Bucket、RAM AccessKey、网关 Secret 或项目令牌；正常流程也不需要主动读取这些值。它在项目首次干净提交后运行 `zhuojian-runtime ensure-app <applicationSlug>`；Runtime 为首次初始化的系统选择当前默认后端并冻结到 release：OSS 模式下自动生成该系统身份并直接注入容器，本地模式下自动建立固定数据目录。重复执行必须复用同一身份和已冻结后端。若管理员已暂停或永久撤销该系统，命令必须失败而不是自动恢复。
 
 ## 原生模块必须满足
 
@@ -108,7 +109,7 @@ python <skill>/scripts/e2e_acceptance.py --base-url https://<模块域名> --mod
 python <skill>/scripts/publish_subsystem.py --project-path <模块项目目录> --base-url https://<模块域名>
 ```
 
-前五项验证通过、容器和 Nginx 已切换到健康版本后，最后一项通过 `POST /api/v1/ecs-publisher/modules/register` 登记当前 Git commit 并同步 Manifest。含持久文件时还必须运行 `validate_source.py --requires-file-storage` 并完成真实上传、下载、重建容器后读取及未授权访问拒绝测试；已启用 OSS 时追加 `--requires-object-storage`。首次发布和后续更新都部署同一本地 Git 仓库、同一 `applicationSlug`、域名、数据目录、存储键和接入密钥；新增子模块、页面、角色建议和 Action 默认为待授权，参与部门变化不会自动改变员工权限。
+除最后登记外的基础检查、源码检查、部署和公网验收全部通过，且容器和 Nginx 已切换到健康版本后，才通过 `POST /api/v1/ecs-publisher/modules/register` 登记当前 Git commit 并同步 Manifest。含持久文件时还必须运行 `validate_source.py --requires-file-storage` 并完成真实上传、下载、重建容器后读取及未授权访问拒绝测试；已启用 OSS 时追加 `--requires-object-storage`。首次发布和后续更新都部署同一本地 Git 仓库、同一 `applicationSlug`、域名、数据目录、存储键和接入密钥；新增子模块、页面、角色建议和 Action 默认为待授权，参与部门变化不会自动改变员工权限。
 
 环境档案声明 `requiresVpn=true`，或本轮实测只有 VPN/代理路径成功时，发布前的 SSH 复验必须复用同一条成功路径。若当前 Codex 使用本机 HTTP 代理，Banner 探测追加 `--proxy-url http://<本机地址>:<端口>`，交互式登录运行 `scripts/ssh_via_http_proxy.py`；AI 完成这些技术操作，不把代理配置或命令抛给业务负责人。实测路径与 Runtime 档案不一致时继续使用已验证路径，但在回执中要求管理员修正档案，不得重新退回必然失败的直连探测。
 

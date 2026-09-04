@@ -12,6 +12,9 @@ from dataclasses import asdict, dataclass
 from http_connect_tunnel import open_http_connect_tunnel, parse_proxy_url
 
 
+CLIENT_IDENTIFICATION = b"SSH-2.0-ZhuoJian_Banner_Probe\r\n"
+
+
 @dataclass(frozen=True)
 class ProbeResult:
     port: int
@@ -71,6 +74,11 @@ def probe_ssh_banner(
             sock = socket.create_connection((host, port), timeout=connect_timeout)
         reachable = True
         sock.settimeout(banner_timeout)
+        # SSH peers are allowed to send their public protocol identification in
+        # either order.  Sending ours first makes sslh classify a multiplexed
+        # 443 connection immediately instead of relying on its idle timeout.
+        # This contains no username, password, key or authentication attempt.
+        sock.sendall(CLIENT_IDENTIFICATION)
         banner += pending
         while len(banner) < 255 and b"\n" not in banner:
             chunk = sock.recv(255 - len(banner))
@@ -97,7 +105,7 @@ def probe_ssh_banner(
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
-            "依次探测 SSH 22/443；只读取服务端 Banner，不发送账号或密码"
+            "依次探测 SSH 22/443；发送公开 SSH 协议标识并读取服务端 Banner，不发送账号或密码"
         )
     )
     parser.add_argument("--host", required=True, help="ECS 公网 IP 或域名")

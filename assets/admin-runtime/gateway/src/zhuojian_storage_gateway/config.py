@@ -27,6 +27,7 @@ class GatewaySettings:
     io_chunk_bytes: int
     spool_dir: Path = Path("/var/lib/zhuojian-storage-gateway/tmp")
     minimum_free_bytes: int = 5 * 1024**3
+    max_concurrent_uploads: int = 2
 
     @classmethod
     def from_environment(cls) -> "GatewaySettings":
@@ -46,7 +47,9 @@ class GatewaySettings:
                     "/var/lib/zhuojian-storage-gateway/registry.sqlite3",
                 )
             ),
-            apps_env_dir=Path(os.environ.get("GATEWAY_APPS_ENV_DIR", "/etc/zhuojian/apps")),
+            apps_env_dir=Path(
+                os.environ.get("GATEWAY_APPS_ENV_DIR", "/etc/zhuojian/storage-apps")
+            ),
             internal_url=internal_url.rstrip("/"),
             root_prefix=root_prefix,
             oss_secrets_file=Path(
@@ -66,6 +69,7 @@ class GatewaySettings:
             minimum_free_bytes=_positive_int(
                 "GATEWAY_MINIMUM_FREE_BYTES", 5 * 1024**3
             ),
+            max_concurrent_uploads=_positive_int("GATEWAY_MAX_CONCURRENT_UPLOADS", 2),
         )
 
 
