@@ -8,7 +8,7 @@ const deleteAttempts=new Map();
 let pageName='业务列表';
 function bridgeOrigin(){try{const origin=new URL(document.referrer).origin;return origin.startsWith('https://')?origin:null}catch{return null}}
 function sendToBridge(message){const target=bridgeOrigin();if(target&&parent!==window)parent.postMessage(message,target)}
-function sendContext(){sendToBridge({type:'zhuojian:context',version:1,enterprise_key:'aifabei',application_slug:'__APPLICATION_SLUG__',module_key:moduleKey,page_key:pageKey,page_name:pageName,route:location.pathname,entity_type:moduleKey,entity_id:null,filters:{},selection:{},data_version:null})}
+function sendContext(){sendToBridge({type:'zhuojian:context',version:1,enterprise_key:'__COMPANY_SLUG__',application_slug:'__APPLICATION_SLUG__',module_key:moduleKey,page_key:pageKey,page_name:pageName,route:location.pathname,entity_type:moduleKey,entity_id:null,filters:{},selection:{},data_version:null})}
 function newRequestId(){if(crypto.randomUUID)return crypto.randomUUID();const bytes=crypto.getRandomValues(new Uint8Array(16));return `ui-${Array.from(bytes,b=>b.toString(16).padStart(2,'0')).join('')}`}
 function node(tag,className,text){const element=document.createElement(tag);if(className)element.className=className;if(text!==undefined)element.textContent=String(text);return element}
 function replaceWithMessage(container,text,className='muted'){container.replaceChildren(node('div',`card ${className}`,text))}

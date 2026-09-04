@@ -37,7 +37,7 @@ def department(value: str) -> dict[str, str]:
 def main() -> int:
     parser = argparse.ArgumentParser(description="建立灼见原生模块系统骨架")
     parser.add_argument("--output", required=True, help="新的项目目录，必须为空或不存在")
-    parser.add_argument("--company-slug", default="aifabei", help="企业稳定英文标识，默认 aifabei")
+    parser.add_argument("--company-slug", default="alphabet", help="企业稳定英文标识，默认 alphabet")
     parser.add_argument("--company-name", default="Alphabet", help="企业显示名称，默认 Alphabet")
     parser.add_argument("--application-slug", required=True)
     parser.add_argument("--application-name", required=True)
@@ -51,6 +51,8 @@ def main() -> int:
         application_slug = project_part(args.application_slug, "applicationSlug")
     except argparse.ArgumentTypeError as exc:
         parser.error(str(exc))
+    if company_slug == "aifabei":
+        company_slug = "alphabet"
     if application_slug == company_slug or application_slug.startswith(f"{company_slug}-"):
         parser.error("applicationSlug 不得重复 companySlug 前缀；本地项目名会自动添加企业前缀")
     project_name = f"{company_slug}-{application_slug}"
@@ -226,6 +228,7 @@ def main() -> int:
     }
     (output / "subsystem.json").write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     replacements = {
+        "__COMPANY_SLUG__": company_slug,
         "__APPLICATION_NAME__": args.application_name.strip(),
         "__APPLICATION_SLUG__": application_slug,
         "__LOCAL_PROJECT_NAME__": project_name,

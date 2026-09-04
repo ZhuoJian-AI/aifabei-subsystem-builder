@@ -4,7 +4,7 @@
 
 ## 标识和边界
 
-- `enterprise.key`：企业稳定标识，Alphabet 沿用 `aifabei`，不因显示名称变更而改写。
+- `enterprise.key`：Alphabet 的正式稳定标识是 `alphabet`。`aifabei` 仅供已有 Runtime 兼容；新 Manifest 必须写 `alphabet`。
 - `applicationSlug`：独立模块系统、域名和发布单元。
 - `moduleKey`：业务大模块中的子模块标识。
 - `pageKey`：子模块内稳定页面/工作上下文，也是最小可见边界。
@@ -82,7 +82,7 @@ ECS 管理员只需在 Runtime 初始化时建立通配域名、HTTPS `443` 和 
   "protocol": "zhuojian-subsystem",
   "version": 2,
   "contractRevision": "2.5",
-  "enterprise": {"key": "aifabei", "name": "Alphabet"},
+  "enterprise": {"key": "alphabet", "name": "Alphabet"},
   "applicationSlug": "sample-review",
   "applicationName": "样品评审系统",
   "bridgeVersion": 1,
@@ -255,7 +255,7 @@ iframe 在模块、页面、实体、筛选或选中项变化后发送。发送�
 {
   "type": "zhuojian:context",
   "version": 1,
-  "enterprise_key": "aifabei",
+  "enterprise_key": "alphabet",
   "application_slug": "sample-review",
   "module_key": "sample_review",
   "page_key": "sample_review.list",
@@ -286,7 +286,7 @@ SaaS 向目标模块投递时使用 `typ=zhuojian-event` JWT，并 POST：
   "event": {
     "eventId": "stable-event-id",
     "eventType": "design.sample_review.approved.v1",
-    "enterpriseKey": "aifabei",
+    "enterpriseKey": "alphabet",
     "moduleKey": "sample_review",
     "entityType": "sample_review",
     "entityId": "SR-001",

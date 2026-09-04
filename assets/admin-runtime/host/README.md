@@ -112,7 +112,7 @@ gateway to it. Applications receive the storage env as a second Docker
 application's bridge.
 
 Applications are accepted only from
-`/srv/zhuojian/repositories/aifabei-<applicationSlug>`, with a clean Git worktree
+`/srv/zhuojian/repositories/<enterpriseKey>-<applicationSlug>`, with a clean Git worktree
 and a full commit SHA. Containers bind only `127.0.0.1:18000-18999`, use immutable
 SHA image tags, fixed `/data`, a mode-`0600` app env, exact Host routing, health
 gates, a `512m` Nginx request-body limit matching the managed application upload

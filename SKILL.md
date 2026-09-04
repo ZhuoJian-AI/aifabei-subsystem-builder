@@ -5,7 +5,7 @@ description: "让 AI 用业务需求和服务器登录信息，在 Alphabet 企�
 
 # Alphabet 企业业务系统
 
-对外名称使用 `Alphabet`；已有技术标识 `aifabei` 保持不变。
+对外名称和正式企业标识都使用 `Alphabet` / `alphabet`；Skill 名称中的 `aifabei` 只作历史兼容。
 
 业务负责人只需提供三样东西：想做什么、谁使用、服务器登录信息。不要让其准备阿里云、OSS、GitHub、模型供应商或平台令牌，也不要让其选择技术方案。密码只交给真实 SSH 密码提示，不写入命令、文件、Git、日志或回复。
 

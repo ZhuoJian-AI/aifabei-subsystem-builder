@@ -68,12 +68,21 @@ BUCKET_RE = re.compile(r"^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$")
 REGION_RE = re.compile(r"^[a-z0-9][a-z0-9-]+$")
 ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 DEFAULT_PLATFORM_ORIGIN = "https://ai-platform.staging.zhuojianai.com"
+CANONICAL_ENTERPRISE_KEY = "alphabet"
+ACCEPTED_ENTERPRISE_KEYS = frozenset({CANONICAL_ENTERPRISE_KEY, "aifabei"})
 NGINX_CLIENT_MAX_BODY_SIZE = "512m"
 NGINX_APPLICATION_RESPONSE_TIMEOUT = "900s"
 
 
 class AdminError(RuntimeError):
     """Expected, user-actionable refusal."""
+
+
+def canonical_enterprise_key(value: Any) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized not in ACCEPTED_ENTERPRISE_KEYS:
+        raise AdminError("this administrator bundle only accepts enterpriseKey=alphabet")
+    return CANONICAL_ENTERPRISE_KEY
 
 
 @dataclass(frozen=True)
@@ -266,9 +275,7 @@ def load_runtime(paths: Paths = PATHS) -> dict[str, Any]:
         raise AdminError(f"invalid runtime profile: {exc}") from exc
     if profile.get("schemaVersion") != 2:
         raise AdminError("runtime profile schemaVersion must be 2")
-    enterprise = profile.get("enterpriseKey")
-    if enterprise != "aifabei":
-        raise AdminError("this administrator bundle only accepts enterpriseKey=aifabei")
+    canonical_enterprise_key(profile.get("enterpriseKey"))
     organization_id = profile.get("organizationId")
     try:
         uuid.UUID(str(organization_id))
@@ -1435,7 +1442,9 @@ def ensure_env(slug: str, profile: dict[str, Any], paths: Paths = PATHS) -> Path
             atomic_write(target, updated, 0o600)
         return target
     values = {
-        "ZHUOJIAN_ENTERPRISE_KEY": profile["enterpriseKey"],
+        # Existing aifabei runtimes keep their container/image paths, while every
+        # newly created Manifest uses the canonical Alphabet contract identity.
+        "ZHUOJIAN_ENTERPRISE_KEY": canonical_enterprise_key(profile["enterpriseKey"]),
         "ZHUOJIAN_ORGANIZATION_ID": profile["organizationId"],
         "ZHUOJIAN_APPLICATION_SLUG": slug,
         "ZHUOJIAN_PUBLIC_ORIGIN": public_origin,

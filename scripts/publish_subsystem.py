@@ -26,6 +26,12 @@ except ImportError:  # pragma: no cover - Windows development host
 
 
 RUNTIME_LOCK_FILE = Path("/run/lock/zhuojian-runtime-admin.lock")
+CANONICAL_ENTERPRISE_KEY = "alphabet"
+
+
+def canonical_enterprise_key(value: object) -> str:
+    normalized = str(value or "").strip().lower()
+    return CANONICAL_ENTERPRISE_KEY if normalized == "aifabei" else normalized
 
 
 @contextlib.contextmanager
@@ -392,7 +398,9 @@ def main() -> int:
         raise SystemExit("Manifest 缺少 applicationSlug/applicationName")
     if parsed.hostname != f"{application_slug}.{domain_suffix}":
         raise SystemExit("Manifest applicationSlug 与模块域名不一致")
-    if enterprise_key != str(profile.get("enterpriseKey") or ""):
+    if canonical_enterprise_key(enterprise_key) != canonical_enterprise_key(
+        profile.get("enterpriseKey")
+    ):
         raise SystemExit("Manifest enterprise.key 与 Runtime 企业不一致")
 
     metadata = load_object(args.release_metadata, "发布元数据") if args.release_metadata else {}

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -18,6 +19,34 @@ def run_checked(command: list[str], *, cwd: Path) -> subprocess.CompletedProcess
     )
     assert result.returncode == 0, result.stdout + result.stderr
     return result
+
+
+def test_scaffold_defaults_to_the_canonical_alphabet_identity(tmp_path: Path):
+    project = tmp_path / "default-identity"
+    run_checked(
+        [
+            sys.executable,
+            str(ROOT / "scripts" / "scaffold_subsystem.py"),
+            "--output",
+            str(project),
+            "--application-slug",
+            "identity-probe",
+            "--application-name",
+            "Identity probe",
+            "--module-key",
+            "identity.main",
+            "--module-name",
+            "Identity",
+            "--department",
+            "ops:Operations:owner",
+        ],
+        cwd=ROOT,
+    )
+
+    manifest = json.loads((project / "subsystem.json").read_text(encoding="utf-8"))
+    page = (project / "static" / "index.html").read_text(encoding="utf-8")
+    assert manifest["enterprise"]["key"] == "alphabet"
+    assert "enterprise_key:'alphabet'" in page
 
 
 def test_scaffolded_native_system_runs_its_security_and_recovery_suite(tmp_path: Path):

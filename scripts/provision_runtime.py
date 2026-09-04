@@ -240,7 +240,7 @@ def main() -> int:
     )
     parser.add_argument("--organization-id", required=True)
     parser.add_argument("--runtime-key", required=True)
-    parser.add_argument("--enterprise-key", default="aifabei")
+    parser.add_argument("--enterprise-key", default="alphabet")
     parser.add_argument(
         "--environment",
         choices=("development", "staging", "production"),

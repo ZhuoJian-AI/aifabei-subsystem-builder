@@ -108,6 +108,25 @@ class RuntimeHostTests(unittest.TestCase):
         paths.upload_lock.touch(exist_ok=True)
         paths.upload_lock.chmod(0o444)
 
+    def test_alphabet_is_canonical_and_legacy_runtime_identity_is_accepted(self):
+        self.assertEqual(runtime_admin.canonical_enterprise_key("alphabet"), "alphabet")
+        self.assertEqual(runtime_admin.canonical_enterprise_key("aifabei"), "alphabet")
+        with self.assertRaises(runtime_admin.AdminError):
+            runtime_admin.canonical_enterprise_key("alphabat")
+
+    def test_new_app_env_uses_alphabet_on_a_legacy_runtime(self):
+        with tempfile.TemporaryDirectory() as directory:
+            paths = self.paths(Path(directory))
+            self.create_roots(paths)
+            profile = self.profile(paths)
+
+            env_file = runtime_admin.ensure_env("new-app", profile, paths)
+
+            self.assertIn(
+                "ZHUOJIAN_ENTERPRISE_KEY=alphabet\n",
+                env_file.read_text(encoding="utf-8"),
+            )
+
     def test_slug_and_management_host_validation_remain_strict(self):
         self.assertEqual(runtime_admin.validate_slug("sample-review"), "sample-review")
         for invalid in ("../sample", "Sample", "a_b", "a.b", "-bad", "bad-", ""):

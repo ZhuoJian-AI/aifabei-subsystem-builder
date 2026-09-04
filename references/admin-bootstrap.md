@@ -38,10 +38,10 @@
 ```json
 {
   "schemaVersion": 2,
-  "enterpriseKey": "aifabei",
+  "enterpriseKey": "alphabet",
   "organizationId": "<灼见组织UUID>",
   "environment": "staging",
-  "runtimeId": "aifabei-hk-01",
+  "runtimeId": "alphabet-hk-01",
   "deployment": {
     "provider": "direct-ecs",
     "repositoriesRoot": "/srv/zhuojian/repositories",
@@ -127,8 +127,8 @@ Authorization: Bearer <平台管理员会话 Token>
 ```text
 python <skill>/scripts/provision_runtime.py \
   --organization-id <组织UUID> \
-  --runtime-key aifabei-hk-01 \
-  --enterprise-key aifabei \
+  --runtime-key alphabet-hk-01 \
+  --enterprise-key alphabet \
   --environment staging \
   --domain-suffix aifabei.staging.zhuojianai.com \
   --public-address <ECS公网IP> \
