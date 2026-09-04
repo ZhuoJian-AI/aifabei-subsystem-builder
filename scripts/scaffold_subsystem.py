@@ -83,40 +83,119 @@ def main() -> int:
         ("query", False), ("create", False), ("update", False), ("delete", True),
         ("approve", True), ("export", False),
     ]
-    action_rows = [{
-        "actionKey": f"{module_key}.{operation}",
-        "name": {
+    operation_name = {
             "query": "查询", "create": "新增", "update": "修改", "delete": "删除",
             "approve": "审批", "export": "导出",
-        }[operation] + args.module_name,
-        "description": f"{operation} {args.module_name}业务数据",
-        "operation": operation,
-        "aiEnabled": True,
-        "requiresConfirmation": confirm,
-        "inputSchema": {"type": "object", "properties": {}},
-        "resultSchema": {"type": "object"},
-    } for operation, confirm in actions]
-    page_key = f"{module_key}.list"
-    role_operations = {
-        "owner": {"query", "create", "update", "delete", "approve", "export"},
-        "collaborator": {"query", "create", "update", "export"},
-        "approver": {"query", "approve", "export"},
-        "consumer": {"query", "export"},
     }
+    input_schemas = {
+        "query": {"type": "object", "properties": {
+            "filters": {"type": "object", "description": f"用于筛选{args.module_name}记录的业务条件"},
+        }},
+        "create": {"type": "object", "required": ["data"], "properties": {
+            "data": {"type": "object", "description": f"创建{args.module_name}记录所需的业务字段"},
+        }},
+        "update": {"type": "object", "required": ["id", "changes"], "properties": {
+            "id": {"type": "string", "description": f"需要修改的{args.module_name}记录标识"},
+            "changes": {"type": "object", "description": "本次需要修改的业务字段和值"},
+        }},
+        "delete": {"type": "object", "required": ["id"], "properties": {
+            "id": {"type": "string", "description": f"需要删除的{args.module_name}记录标识"},
+        }},
+        "approve": {"type": "object", "required": ["id"], "properties": {
+            "id": {"type": "string", "description": f"需要审批的{args.module_name}记录标识"},
+            "comment": {"type": "string", "description": "审批意见，没有意见时可以省略"},
+        }},
+        "export": {"type": "object", "required": ["id"], "properties": {
+            "id": {"type": "string", "description": f"需要导出的{args.module_name}记录标识"},
+        }},
+    }
+    example_params = {
+        "query": {"filters": {"status": "待处理"}},
+        "create": {"data": {"name": "示例记录"}},
+        "update": {"id": "record-id", "changes": {"status": "已更新"}},
+        "delete": {"id": "record-id"},
+        "approve": {"id": "record-id", "comment": "同意"},
+        "export": {"id": "record-id"},
+    }
+    result_schemas = {
+        "query": {"type": "object", "description": f"查询{args.module_name}后的结构化业务结果", "required": ["items"], "properties": {
+            "items": {"type": "array", "description": f"当前用户权限范围内的{args.module_name}记录列表"},
+        }},
+        "create": {"type": "object", "description": f"新增{args.module_name}后的结构化业务结果", "required": ["id", "version"], "properties": {
+            "id": {"type": "string", "description": "新建记录的稳定标识"},
+            "version": {"type": "integer", "description": "新建记录的当前版本号"},
+            "status": {"type": "string", "description": "新建记录的当前业务状态"},
+        }},
+        "update": {"type": "object", "description": f"修改{args.module_name}后的结构化业务结果", "required": ["id", "version"], "properties": {
+            "id": {"type": "string", "description": "已修改记录的稳定标识"},
+            "version": {"type": "integer", "description": "修改后的记录版本号"},
+            "status": {"type": "string", "description": "修改后的业务状态"},
+        }},
+        "delete": {"type": "object", "description": f"删除{args.module_name}后的结构化业务结果", "required": ["id", "deleted"], "properties": {
+            "id": {"type": "string", "description": "已删除记录的稳定标识"},
+            "deleted": {"type": "boolean", "description": "是否已完成删除"},
+        }},
+        "approve": {"type": "object", "description": f"审批{args.module_name}后的结构化业务结果", "required": ["id", "version", "status"], "properties": {
+            "id": {"type": "string", "description": "已审批记录的稳定标识"},
+            "version": {"type": "integer", "description": "审批后的记录版本号"},
+            "status": {"type": "string", "description": "审批后的业务状态"},
+        }},
+        "export": {"type": "object", "description": f"导出{args.module_name}后的结构化业务结果", "required": ["record"], "properties": {
+            "record": {"type": "object", "description": "可供平台生成或下载文件的导出数据"},
+        }},
+    }
+    action_rows = []
+    for operation, confirm in actions:
+        verb = operation_name[operation]
+        writes_data = operation in {"create", "update", "delete", "approve"}
+        ai_tool = {
+            "whenToUse": f"用户明确要求{verb}{args.module_name}业务数据，并且目标和条件已经足够明确时使用。",
+            "whenNotToUse": f"用户只是咨询规则、信息不足，或要求执行{args.module_name}以外的业务时不要使用。",
+            "preconditions": [
+                f"当前用户已获得{args.module_name}页面及 {module_key}.{operation} Action 权限。",
+                "涉及具体记录时，已经通过最新查询或页面上下文确认目标记录。",
+            ],
+            "sideEffects": (
+                f"会对{args.module_name}业务数据执行{verb}并留下审计记录。"
+                if writes_data else f"不会修改{args.module_name}业务数据。"
+            ),
+            "examples": [{
+                "userRequest": f"请帮我{verb}一条{args.module_name}记录",
+                "params": example_params[operation],
+            }],
+        }
+        if confirm:
+            ai_tool["confirmationPrompt"] = f"即将{verb}{args.module_name}业务数据，是否确认继续？"
+        action_rows.append({
+            "actionKey": f"{module_key}.{operation}",
+            "name": f"{verb}{args.module_name}",
+            "description": f"{verb}{args.module_name}业务数据，并返回可供页面和平台 AI 继续处理的结构化结果。",
+            "operation": operation,
+            "aiEnabled": True,
+            "requiresConfirmation": confirm,
+            "aiTool": ai_tool,
+            "inputSchema": input_schemas[operation],
+            "resultSchema": result_schemas[operation],
+        })
+    page_key = f"{module_key}.list"
+    department_rows = list(departments)
+    permission_bundles = [
+        ("basic", "基础查看", {"query"}),
+    ]
     access_roles = [{
-        "roleKey": f"{module_key}.{item['key']}.{item['role']}",
-        "name": f"{args.module_name}{item['name']}{'负责人' if item['role'] == 'owner' else '协作角色'}",
-        "suggestedDepartmentKey": item["key"],
+        "roleKey": f"{module_key}.{bundle_key}",
+        "name": f"{args.module_name}{bundle_name}权限组合",
+        "description": "最小冷启动权限组合；发布前应按真实业务增补必要组合。它只供管理员向 SaaS 已有平台角色授权，不创建子系统角色。",
         "pageKeys": [page_key],
         "actionKeys": [
             row["actionKey"] for row in action_rows
-            if row["operation"] in role_operations[item["role"]]
+            if row["operation"] in operations
         ],
-    } for item in departments]
+    } for bundle_key, bundle_name, operations in permission_bundles]
     config = {
         "protocol": "zhuojian-subsystem",
         "version": 2,
-        "contractRevision": "2.5",
+        "contractRevision": "2.4",
         "enterprise": {"key": company_slug, "name": args.company_name.strip()},
         "applicationSlug": application_slug,
         "applicationName": args.application_name.strip(),
@@ -128,7 +207,7 @@ def main() -> int:
             "moduleKey": module_key,
             "name": args.module_name.strip(),
             "route": f"/{module_key.replace('_', '-')}",
-            "departments": departments,
+            "departments": department_rows,
             "accessRoles": access_roles,
             "pages": [{
                 "pageKey": page_key,

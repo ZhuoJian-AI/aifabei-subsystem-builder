@@ -217,7 +217,7 @@ OSS 模式继续兼容以下档案：
 1. 只把已验证文件的 `storageBackend` 从 `local` 更新为 `oss-gateway`，分批提交并记录批次；不要一次无条件更新整表。
 2. 由 Runtime 生成/复用该系统身份并把 `FILE_STORAGE_DRIVER=oss-gateway`、`FILE_STORAGE_GATEWAY_URL` 和 `FILE_STORAGE_TOKEN` 注入新容器；不得人工复制令牌。普通 `ensure-app/deploy` 会尊重旧 release 并拒绝把本地系统顺带改成 OSS。当前 Runtime 故意不提供假装适用于所有数据库的通用切换命令：管理员 AI 必须先为该系统实现并测试一个专项迁移入口，在同一受控操作里核验迁移清单、原子备份旧 release、切换 `storageMode/storageEnvFile/storageNetwork`、用冻结镜像重建并健康检查，任一步失败就恢复旧 release 和旧容器。专项入口尚未完成时必须停止迁移；不得直接手改 JSON 或靠修改 Runtime 默认值完成迁移。
 3. 通过原来的业务下载地址抽样和批量校验；前端 URL、业务 API 和 `fileId` 不应改变。
-4. 保留读取回退：标记为 `oss` 的对象读取失败时只记录并报警，不自动永久改回本地；管理员可按批次回滚数据库标记和应用配置。
+4. 保留读取回退：标记为 `oss-gateway` 的对象读取失败时只记录并报警，不自动永久改回本地；管理员可按批次回滚数据库标记和应用配置。
 
 ### 4. 观察、回滚与清理
 

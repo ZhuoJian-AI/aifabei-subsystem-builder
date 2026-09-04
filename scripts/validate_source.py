@@ -64,7 +64,9 @@ def main() -> int:
         text = path.read_text(encoding="utf-8", errors="replace")
         context_found = context_found or "zhuojian:context" in text
         page_scope_tokens.update(
-            token for token in ("pageKeys", "actionKeys", "pageAccess") if token in text
+            token for token in (
+                "pageKeys", "actionKeys", "pageAccess", "roleIds", "effectiveDataScope"
+            ) if token in text
         )
         storage_markers.update(token for token in (
             "FILE_STORAGE_DRIVER",
@@ -91,10 +93,13 @@ def main() -> int:
 
     if not context_found:
         failures.append("未找到 zhuojian:context 页面上下文 Bridge")
-    missing_scope = {"pageKeys", "actionKeys", "pageAccess"} - page_scope_tokens
+    missing_scope = {
+        "pageKeys", "actionKeys", "pageAccess", "roleIds", "effectiveDataScope"
+    } - page_scope_tokens
     if missing_scope:
         failures.append(
-            "未实现 v2.5 SSO 页面/操作 allowlist：" + ", ".join(sorted(missing_scope))
+            "未实现 v2.4 SSO 页面/操作/角色/数据范围："
+            + ", ".join(sorted(missing_scope))
         )
     if args.requires_file_storage or args.requires_object_storage:
         missing_storage = {
@@ -126,7 +131,7 @@ def main() -> int:
         return 1
     print(
         "SOURCE VALIDATION PASS: platform model credentials are absent; "
-        "bridge origin and v2.5 SSO page/action scope are present"
+        "bridge origin and v2.4 SSO page/action/role/data scope are present"
     )
     return 0
 

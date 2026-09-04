@@ -48,6 +48,14 @@ class ActionRouteTests(unittest.TestCase):
         }
         cls.integration_secret = "integration-secret-used-only-by-action-tests"
         cls.organization_id = "test-organization"
+        cls.department_id = "ops"
+        cls.role_ids = ["ops-owner"]
+        cls.effective_data_scope = {
+            "unrestricted": False,
+            "include_self": False,
+            "own_only": False,
+            "department_ids": [cls.department_id],
+        }
         os.environ.update({
             "ZHUOJIAN_INTEGRATION_SECRET": cls.integration_secret,
             "SESSION_SECRET": "session-secret-used-only-by-action-tests-123",
@@ -83,6 +91,10 @@ class ActionRouteTests(unittest.TestCase):
             "aud": cls.application.APP_SLUG,
             "sub": "page-action-test-user",
             "organizationId": cls.organization_id,
+            "departmentId": cls.department_id,
+            "departmentIds": [cls.department_id],
+            "roleIds": cls.role_ids,
+            "effectiveDataScope": cls.effective_data_scope,
             "moduleKey": cls.module_key,
             "pageKeys": [cls.page_key],
             "actionKeys": action_keys,
@@ -153,6 +165,10 @@ class ActionRouteTests(unittest.TestCase):
             "aud": self.application.APP_SLUG,
             "sub": "integration-action-test-user",
             "organizationId": self.organization_id,
+            "departmentId": self.department_id,
+            "departmentIds": [self.department_id],
+            "roleIds": self.role_ids,
+            "effectiveDataScope": self.effective_data_scope,
             "moduleKey": self.module_key,
             "pageKey": self.page_key,
             "actionKey": action["actionKey"],
@@ -230,17 +246,23 @@ class ActionRouteTests(unittest.TestCase):
         )
 
     def test_request_id_schema_and_payload_binding_are_enforced(self):
-        bad_body = self.action_body("create", "bad/id", {"id": uuid4().hex})
+        bad_body = self.action_body(
+            "create", "bad/id", {"id": uuid4().hex, "data": {}}
+        )
         bad = self.post_integration("create", bad_body)
         self.assertEqual(bad.status_code, 422, bad.text)
 
         request_id = uuid4().hex
         record_id = uuid4().hex
-        body = self.action_body("create", request_id, {"id": record_id, "name": "first"})
+        body = self.action_body(
+            "create", request_id, {"id": record_id, "data": {"name": "first"}}
+        )
         created = self.post_integration("create", body)
         self.assertEqual(created.status_code, 200, created.text)
 
-        changed = self.action_body("create", request_id, {"id": record_id, "name": "changed"})
+        changed = self.action_body(
+            "create", request_id, {"id": record_id, "data": {"name": "changed"}}
+        )
         rebound = self.post_integration("create", changed)
         self.assertEqual(rebound.status_code, 409, rebound.text)
 
@@ -255,6 +277,62 @@ class ActionRouteTests(unittest.TestCase):
             action["aiEnabled"] = previous
 
         self.assertEqual(response.status_code, 404, response.text)
+
+    def test_role_scope_and_dynamic_action_parameter_shapes_are_enforced(self):
+        denied = self.post_integration(
+            "create",
+            self.action_body(
+                "create",
+                uuid4().hex,
+                {"data": {"name": "outside", "departmentId": "finance"}},
+            ),
+        )
+        self.assertEqual(denied.status_code, 403, denied.text)
+
+        record_id = uuid4().hex
+        created = self.post_integration(
+            "create",
+            self.action_body(
+                "create",
+                uuid4().hex,
+                {"id": record_id, "data": {"name": "inside"}},
+            ),
+        )
+        self.assertEqual(created.status_code, 200, created.text)
+
+        changed = self.post_integration(
+            "update",
+            self.action_body(
+                "update",
+                uuid4().hex,
+                {"id": record_id, "changes": {"name": "updated"}},
+                expected_version=1,
+            ),
+        )
+        self.assertEqual(changed.status_code, 200, changed.text)
+        self.assertEqual(changed.json()["version"], 2)
+
+        malformed = self.post_integration(
+            "update",
+            self.action_body(
+                "update",
+                uuid4().hex,
+                {"id": record_id, "name": "flat-shape-is-not-v2.4"},
+                expected_version=2,
+            ),
+        )
+        self.assertEqual(malformed.status_code, 422, malformed.text)
+
+        with closing(sqlite3.connect(os.environ["DATABASE_PATH"])) as connection:
+            row = connection.execute(
+                "SELECT data,department_id,created_by,version FROM records WHERE id=?",
+                (record_id,),
+            ).fetchone()
+        self.assertIsNotNone(row)
+        self.assertEqual(json.loads(row[0])["name"], "updated")
+        self.assertEqual(row[1], self.department_id)
+        self.assertEqual(row[2], "integration-action-test-user")
+        self.assertEqual(row[3], 2)
 
     def test_sibling_origin_cannot_use_the_ui_session_with_simple_content_type(self):
         body = self.action_body("delete", uuid4().hex, {"id": "victim"}, expected_version=1)
@@ -380,7 +458,7 @@ class ActionRouteTests(unittest.TestCase):
     def test_concurrent_same_request_executes_business_change_once(self):
         request_id = uuid4().hex
         record_id = uuid4().hex
-        params = {"id": record_id, "name": "concurrent"}
+        params = {"id": record_id, "data": {"name": "concurrent"}}
         body = self.action_body("create", request_id, params)
         token = self.action_token("create", request_id, params)
 
@@ -412,7 +490,13 @@ class ActionRouteTests(unittest.TestCase):
         request_id = uuid4().hex
         record_id = uuid4().hex
         action = self.actions["create"]
-        params = {"id": record_id, "name": "crash-test"}
+        params = {"id": record_id, "data": {"name": "crash-test"}}
+        actor_claims = {
+            "sub": "integration-action-test-user",
+            "departmentId": self.department_id,
+            "roleIds": self.role_ids,
+            "effectiveDataScope": self.effective_data_scope,
+        }
         request_hash = self.application.action_request_hash(
             action["actionKey"],
             self.module_key,
@@ -423,7 +507,9 @@ class ActionRouteTests(unittest.TestCase):
         )
 
         def crash_after_business_change(connection):
-            self.application.execute_business_action(action, params, None, connection)
+            self.application.execute_business_action(
+                action, params, None, actor_claims, connection
+            )
             raise RuntimeError("simulated crash before request result commit")
 
         with self.assertRaisesRegex(RuntimeError, "simulated crash"):
@@ -454,7 +540,7 @@ class ActionRouteTests(unittest.TestCase):
             confirmation=None,
             require_page_confirmation=False,
             perform=lambda connection: self.application.execute_business_action(
-                action, params, None, connection
+                action, params, None, actor_claims, connection
             ),
         )
         self.assertEqual(result["id"], record_id)
@@ -464,7 +550,7 @@ class ActionRouteTests(unittest.TestCase):
         create_id = uuid4().hex
         created = self.post_integration(
             "create",
-            self.action_body("create", create_id, {"id": record_id}),
+            self.action_body("create", create_id, {"id": record_id, "data": {}}),
         )
         self.assertEqual(created.status_code, 200, created.text)
 
@@ -496,7 +582,7 @@ class ActionRouteTests(unittest.TestCase):
         record_id = uuid4().hex
         created = self.post_integration(
             "create",
-            self.action_body("create", uuid4().hex, {"id": record_id}),
+            self.action_body("create", uuid4().hex, {"id": record_id, "data": {}}),
         )
         self.assertEqual(created.status_code, 200, created.text)
 
@@ -535,7 +621,7 @@ class ActionRouteTests(unittest.TestCase):
         record_id = uuid4().hex
         created = self.post_integration(
             "create",
-            self.action_body("create", uuid4().hex, {"id": record_id}),
+            self.action_body("create", uuid4().hex, {"id": record_id, "data": {}}),
         )
         self.assertEqual(created.status_code, 200, created.text)
 

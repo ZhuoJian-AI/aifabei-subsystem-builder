@@ -19,6 +19,7 @@ class RejectRedirects(HTTPRedirectHandler):
 
 OPENER = build_opener(RejectRedirects)
 STABLE_KEY_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
+VALIDATION_WARNINGS: list[str] = []
 
 
 def get_json(url: str, token: str) -> dict:
@@ -34,6 +35,109 @@ def get_json(url: str, token: str) -> dict:
 def same_origin(left: str, right: str) -> bool:
     first, second = urlsplit(left), urlsplit(right)
     return (first.scheme, first.hostname, first.port) == (second.scheme, second.hostname, second.port)
+
+
+def require_text(value: object, label: str, maximum: int = 1000) -> str:
+    text = value.strip() if isinstance(value, str) else ""
+    if not text or len(text) > maximum:
+        raise SystemExit(f"{label} 必须是 1–{maximum} 字的非空文本。")
+    return text
+
+
+def warn(message: str) -> None:
+    VALIDATION_WARNINGS.append(message)
+
+
+def check_optional_text(value: object, label: str, maximum: int = 1000) -> None:
+    if not isinstance(value, str) or not value.strip() or len(value.strip()) > maximum:
+        warn(f"{label} 已提供但不是有效的非空文本，平台将忽略该增强项。")
+
+
+def validate_schema(schema: dict, label: str, *, require_object_root: bool) -> None:
+    if require_object_root and schema.get("type") != "object":
+        raise SystemExit(f"{label}.type 必须为 object。")
+    properties = schema.get("properties")
+    if properties is not None and not isinstance(properties, dict):
+        raise SystemExit(f"{label}.properties 必须是对象。")
+    required = schema.get("required")
+    if required is not None and (not isinstance(required, list) or len(required) != len(set(required))):
+        raise SystemExit(f"{label}.required 必须是无重复字段名的数组。")
+    unknown_required = [key for key in (required or []) if key not in (properties or {})]
+    if unknown_required:
+        raise SystemExit(f"{label}.required 引用了未定义字段：{', '.join(map(str, unknown_required))}")
+
+    def walk_property(field_schema: object, field_label: str) -> None:
+        if not isinstance(field_schema, dict):
+            raise SystemExit(f"{field_label} 必须是 JSON Schema 对象。")
+        if "description" not in field_schema:
+            warn(f"{field_label} 建议补充 description。")
+        else:
+            check_optional_text(field_schema["description"], f"{field_label}.description", 500)
+        nested = field_schema.get("properties")
+        if nested is not None:
+            if not isinstance(nested, dict):
+                raise SystemExit(f"{field_label}.properties 必须是对象。")
+            for nested_name, nested_schema in nested.items():
+                walk_property(nested_schema, f"{field_label}.properties.{nested_name}")
+        items = field_schema.get("items")
+        if isinstance(items, dict) and isinstance(items.get("properties"), dict):
+            for nested_name, nested_schema in items["properties"].items():
+                walk_property(nested_schema, f"{field_label}.items.properties.{nested_name}")
+
+    for field_name, field_schema in (properties or {}).items():
+        walk_property(field_schema, f"{label}.properties.{field_name}")
+
+
+def validate_action_contract(action: dict, label: str) -> None:
+    description = require_text(action.get("description"), f"{label}.description")
+    if description.lower() in {"todo", "tbd", "placeholder", "execute action"} or description in {"执行操作", "处理数据"}:
+        warn(f"{label}.description 看起来像占位文案，建议改成具体业务用途。")
+
+    ai_tool = action.get("aiTool")
+    if ai_tool is not None and not isinstance(ai_tool, dict):
+        warn(f"{label}.aiTool 不是对象，平台将忽略该增强项。")
+        ai_tool = None
+
+    if isinstance(ai_tool, dict):
+        if "whenToUse" in ai_tool:
+            check_optional_text(ai_tool["whenToUse"], f"{label}.aiTool.whenToUse")
+        elif action.get("aiEnabled"):
+            warn(f"{label}.aiTool.whenToUse 是推荐增强项。")
+        for field in ("whenNotToUse", "sideEffects"):
+            if field in ai_tool:
+                check_optional_text(ai_tool[field], f"{label}.aiTool.{field}")
+            else:
+                warn(f"{label}.aiTool.{field} 是推荐增强项。")
+        if "confirmationPrompt" in ai_tool:
+            check_optional_text(ai_tool["confirmationPrompt"], f"{label}.aiTool.confirmationPrompt", 500)
+        preconditions = ai_tool.get("preconditions")
+        if preconditions is None:
+            warn(f"{label}.aiTool.preconditions 是推荐增强项。")
+        elif not isinstance(preconditions, list) or len(preconditions) > 20:
+            warn(f"{label}.aiTool.preconditions 格式不正确，平台将忽略该增强项。")
+        else:
+            for index, item in enumerate(preconditions):
+                check_optional_text(item, f"{label}.aiTool.preconditions[{index}]", 500)
+        examples = ai_tool.get("examples")
+        if examples is None:
+            warn(f"{label}.aiTool.examples 是推荐增强项。")
+        elif not isinstance(examples, list) or len(examples) > 5:
+            warn(f"{label}.aiTool.examples 格式不正确，平台将忽略该增强项。")
+        else:
+            for index, example in enumerate(examples):
+                if not isinstance(example, dict) or not isinstance(example.get("params"), dict):
+                    warn(f"{label}.aiTool.examples[{index}] 格式不正确，平台将忽略该示例。")
+                    continue
+                check_optional_text(
+                    example.get("userRequest"), f"{label}.aiTool.examples[{index}].userRequest", 500
+                )
+        if action.get("requiresConfirmation") and "confirmationPrompt" not in ai_tool:
+            warn(f"{label} 需要确认，建议补充 aiTool.confirmationPrompt。")
+    elif action.get("aiEnabled"):
+        warn(f"{label}.aiTool 未提供；平台将使用 description 生成基础工具，不阻断登记。")
+
+    validate_schema(action["inputSchema"], f"{label}.inputSchema", require_object_root=True)
+    validate_schema(action["resultSchema"], f"{label}.resultSchema", require_object_root=False)
 
 
 def main() -> int:
@@ -62,11 +166,11 @@ def main() -> int:
         raise SystemExit("清单缺少字段：" + "、".join(missing))
     if manifest.get("protocol") != "zhuojian-subsystem" or manifest.get("version") != 2:
         raise SystemExit("清单必须使用 zhuojian-subsystem version 2。")
-    if manifest.get("contractRevision") != "2.5":
-        raise SystemExit("冷启动验收要求 contractRevision=2.5。")
+    if manifest.get("contractRevision") != "2.4":
+        raise SystemExit("冷启动验收要求当前 SaaS 已支持的 contractRevision=2.4。")
     for module in manifest.get("modules") or []:
         if not module.get("accessRoles"):
-            raise SystemExit(f"子模块 {module.get('moduleKey')} 缺少 accessRoles 角色建议。")
+            raise SystemExit(f"子模块 {module.get('moduleKey')} 缺少 accessRoles 权限组合建议。")
     enterprise = manifest.get("enterprise")
     if not isinstance(enterprise, dict) or not enterprise.get("key") or not enterprise.get("name"):
         raise SystemExit("清单 enterprise 必须包含稳定 key 和 name。")
@@ -127,8 +231,6 @@ def main() -> int:
         for department_index, department in enumerate(departments):
             if not isinstance(department, dict) or not all(department.get(key) for key in ("key", "name", "role")):
                 raise SystemExit(f"{label}.departments[{department_index}] 必须包含 key/name/role。")
-            if not isinstance(department.get("actionKeys"), list) or not isinstance(department.get("pageKeys"), list):
-                raise SystemExit(f"{label}.departments[{department_index}] 必须声明 actionKeys/pageKeys。")
             key = str(department["key"])
             if not STABLE_KEY_RE.fullmatch(key) or key in local_departments:
                 raise SystemExit(f"{label} 的部门 key 格式无效或重复：{key}")
@@ -143,7 +245,7 @@ def main() -> int:
         for action_index, action in enumerate(actions):
             action_label = f"{label}.actions[{action_index}]"
             required = (
-                "actionKey", "name", "operation", "aiEnabled", "requiresConfirmation",
+                "actionKey", "name", "description", "operation", "aiEnabled", "requiresConfirmation",
                 "inputSchema", "resultSchema",
             )
             if not isinstance(action, dict) or any(key not in action for key in required):
@@ -158,6 +260,7 @@ def main() -> int:
                 raise SystemExit(f"{action_label} 的 AI/确认标记必须是布尔值。")
             if not isinstance(action["inputSchema"], dict) or not isinstance(action["resultSchema"], dict):
                 raise SystemExit(f"{action_label} 的输入输出 Schema 必须是对象。")
+            validate_action_contract(action, action_label)
         pages = module.get("pages")
         if not isinstance(pages, list) or not pages:
             raise SystemExit(f"{label}.pages 必须是非空列表。")
@@ -184,15 +287,25 @@ def main() -> int:
             if not isinstance(page["contextSchema"], dict):
                 raise SystemExit(f"{page_label}.contextSchema 必须是对象。")
         for department_index, department in enumerate(departments):
-            if any(str(key) not in module_action_keys for key in department["actionKeys"]):
+            department_action_keys = department.get("actionKeys")
+            department_page_keys = department.get("pageKeys")
+            if department_action_keys is not None and (
+                not isinstance(department_action_keys, list)
+                or any(str(key) not in module_action_keys for key in department_action_keys)
+            ):
                 raise SystemExit(f"{label}.departments[{department_index}].actionKeys 引用了本子模块不存在的操作。")
-            if any(str(key) not in module_page_keys for key in department["pageKeys"]):
+            if department_page_keys is not None and (
+                not isinstance(department_page_keys, list)
+                or any(str(key) not in module_page_keys for key in department_page_keys)
+            ):
                 raise SystemExit(f"{label}.departments[{department_index}].pageKeys 引用了本子模块不存在的页面。")
 
     missing_expected = sorted(set(args.expect_module_key) - module_keys)
     if missing_expected:
         raise SystemExit("清单缺少预期子模块：" + "、".join(missing_expected))
 
+    for message in VALIDATION_WARNINGS:
+        print(f"WARNING: {message}")
     print(
         f"接入验证通过：健康状态 {health.get('status', 'ok')}，企业 {enterprise['name']}，"
         f"系统 {manifest['applicationSlug']}，子模块 {len(modules)} 个，"
