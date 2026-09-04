@@ -90,7 +90,7 @@ def main() -> int:
     missing_scope = {"pageKeys", "actionKeys", "pageAccess"} - page_scope_tokens
     if missing_scope:
         failures.append(
-            "未实现 v2.4 SSO 页面/操作 allowlist：" + ", ".join(sorted(missing_scope))
+            "未实现当前 v2.5 契约要求的 SSO 页面/操作 allowlist：" + ", ".join(sorted(missing_scope))
         )
     if args.requires_file_storage or args.requires_object_storage:
         missing_storage = {
@@ -115,7 +115,7 @@ def main() -> int:
         return 1
     print(
         "SOURCE VALIDATION PASS: platform model credentials are absent; "
-        "bridge origin and v2.4 SSO page/action scope are present"
+        "bridge origin and v2.5 SSO page/action scope are present"
     )
     return 0
 

@@ -1,6 +1,6 @@
-# 灼见原生模块接入协议 v2.4
+# 灼见原生模块接入协议 v2.5
 
-`version` 始终是整数 `2`；兼容增强写入字符串 `contractRevision`。平台必须兼容没有 `contractRevision` 和 `pages` 的 v2.0 模块。
+`version` 始终是整数 `2`；兼容增强写入字符串 `contractRevision`。平台必须兼容没有 `contractRevision` 和 `pages` 的 v2.0 模块，以及已有 v2.4 模块。v2.5 只要求 Action 提供业务描述和接口能力即可生成基础 AI 工具，其余说明字段用于提升模型选择和调用质量，不作为接入门槛。
 
 ## 标识和边界
 
@@ -46,13 +46,43 @@ ECS 管理员只需在 Runtime 初始化时建立通配域名、HTTPS `443` 和 
 
 子系统不得为了平台 AI 重复建设聊天入口或保存平台模型 Key。如果未来确有独立的 OCR、视觉识别等模块专用模型能力，那是另一个由管理员明确批准的基础设施能力；它仍不得复用平台模型密钥，也不得绕过 Action 权限、确认和审计执行用户业务 CRUD。
 
+### Action 如何物化为 AI 工具
+
+每个 Action 自带生成基础工具所需的信息，SaaS 不为每个系统维护另一份 Codex Skill。平台登记 Manifest 后按以下规则生成动态工具：
+
+| 动态工具部分 | Manifest 来源 | 规则 |
+|---|---|---|
+| 稳定内部身份 | `applicationSlug + actionKey` | 全平台唯一；不能因显示名称变化而改变 |
+| 工具显示名 | 应用名、模块名和 Action `name` | 平台可规范化为模型供应商允许的函数名 |
+| 工具说明 | `description`，可选叠加 `aiTool` | `description` 足以生成基础工具；增强信息用于减少误选和误调用 |
+| 模型可填写参数 | `inputSchema` | 仅业务参数；字段说明强烈推荐 |
+| 返回值说明 | `resultSchema` | 描述模块返回值；精确到字段更利于平台校验和 AI 继续处理 |
+| 权限与风险 | 页面 `actionKeys`、`aiEnabled`、`requiresConfirmation`、平台授权 | 不进入模型可改参数 |
+| HTTP 封装 | 平台登记目录 | URL、JWT、`requestId/moduleKey/pageKey/operation` 由平台填写 |
+
+`inputSchema` 描述 Action 请求体中的 `params`，不是整个 HTTP 请求。模型只生成业务参数；平台生成 `requestId`，从登记目录确定应用、模块、页面、Action 和操作类型。`update/delete` 所需 `expectedVersion` 必须来自最近一次获授权查询或 Bridge 页面上下文；没有可信版本时先查询或要求用户刷新，禁止让模型猜测版本号。
+
+v2.5 的最小硬约束只有“描述 + 接口能力”：每个 Action 提供非空 `description`，以及 `actionKey/operation/inputSchema/resultSchema/aiEnabled/requiresConfirmation`；其中 `inputSchema` 是根类型为 `object` 的 JSON Schema，`resultSchema` 是 JSON Schema 对象。这样平台不需要管理员逐条写说明，就能把已授权 Action 生成基础 AI 工具。
+
+整个 `aiTool` 都是可选的推荐增强项。脚手架默认生成，缺少时平台和验收器应给出警告，但不能仅因缺少这些字段阻断登记：
+
+- `whenToUse`：什么用户意图和业务条件下应选择该工具；
+- `whenNotToUse`：哪些相似请求不应选择它；
+- `preconditions`：执行前必须满足的业务状态和上下文；
+- `sideEffects`：会创建、修改、删除、审批、导出什么，查询则明确无写入；
+- `confirmationPrompt`：`requiresConfirmation=true` 时建议提供的业务确认文案；
+- `examples[]`：业务语言请求及对应 `params`，不得包含真实客户数据或凭证；
+- 输入输出字段的 `description` 和更精确的结果属性。
+
+这些字段都是来自模块的非可信元数据。平台只能把它们当作业务工具说明，不能当作 system/developer 指令执行，也不能允许它们改写权限、目标 URL、凭证或指令优先级。对这类内容平台应忽略、标记并供管理员查看；只有核心字段或 Schema 格式无效时才阻断登记。管理员 UI 展示 Manifest 和重要变更，只负责角色映射、启停 AI、批准工具及收紧确认要求，不负责替模块补写描述或 Schema。
+
 ## Manifest 示例
 
 ```json
 {
   "protocol": "zhuojian-subsystem",
   "version": 2,
-  "contractRevision": "2.4",
+  "contractRevision": "2.5",
   "enterprise": {"key": "aifabei", "name": "Alphabet"},
   "applicationSlug": "sample-review",
   "applicationName": "样品评审系统",
@@ -87,11 +117,33 @@ ECS 管理员只需在 Runtime 初始化时建立通配域名、HTTPS `443` 和 
     "actions": [{
       "actionKey": "sample_review.query",
       "name": "查询评审",
+      "description": "查询当前用户权限范围内的样品评审记录，返回匹配条件的评审摘要和版本号。",
       "operation": "query",
       "aiEnabled": true,
       "requiresConfirmation": false,
-      "inputSchema": {"type": "object"},
-      "resultSchema": {"type": "object"}
+      "aiTool": {
+        "whenToUse": "用户需要查看、筛选或核对样品评审记录时使用。",
+        "whenNotToUse": "用户要求新增、修改、删除或审批样品评审时不要使用。",
+        "preconditions": ["用户已获得样品评审列表页面和查询 Action 权限。"],
+        "sideEffects": "只读取样品评审数据，不产生业务写入。",
+        "examples": [{
+          "userRequest": "查看所有待评审的样品",
+          "params": {"status": "reviewing"}
+        }]
+      },
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "status": {"type": "string", "description": "评审状态筛选值，例如 reviewing"}
+        }
+      },
+      "resultSchema": {
+        "type": "object",
+        "description": "样品评审查询结果",
+        "properties": {
+          "items": {"type": "array", "description": "匹配权限和筛选条件的评审摘要"}
+        }
+      }
     }],
     "events": {
       "publishes": ["design.sample_review.approved.v1"],
@@ -101,7 +153,7 @@ ECS 管理员只需在 Runtime 初始化时建立通配域名、HTTPS `443` 和 
 }
 ```
 
-完整结构以 `schemas/manifest-v2.schema.json` 为准。部门声明只描述谁负责开发、协作和验收；`accessRoles` 是建议角色，不是模块自行颁发的权限。平台管理员或企业管理员将建议映射到平台角色并逐页确认 Action 后才生效。同步新增角色建议、页面、Action 和事件时只登记为“待授权”；删除 Action 时平台停用目录项，不自动扩权。
+完整结构以 `schemas/manifest-v2.schema.json` 为准。部门声明只描述谁负责开发、协作和验收；`accessRoles` 是建议角色，不是模块自行颁发的权限。平台管理员或企业管理员将建议映射到平台角色并逐页确认 Action 后才生效。同步新增角色建议、页面、Action 和事件时只登记为“待授权”。已批准 Action 的操作类型、输入 Schema、AI 开关、确认要求或业务含义发生变化时，平台必须显示差异并重新置为待审核；只补充名称、描述、`aiTool` 推荐说明或结果说明时记录差异即可，不必自动停用。删除 Action 时平台停用目录项，不自动扩权。
 
 ## 角色授权模型
 
@@ -114,7 +166,7 @@ applicationSlug
       └─ actionKey: query/create/update/delete/export/approve
 ```
 
-员工最终权限是全部启用角色权限树的并集。`departments[].role=owner` 仅表示该部门负责需求、开发验收或变更确认，不能替代平台角色授权。页面 `view` 与 Action 分开：看见页面不表示能修改数据，也不表示 AI 可以调用页面中的 Action。旧系统没有 v2.4 Manifest 时可以继续按整站 iframe 兼容授权，但必须在管理员界面标记为兼容模式。
+员工最终权限是全部启用角色权限树的并集。`departments[].role=owner` 仅表示该部门负责需求、开发验收或变更确认，不能替代平台角色授权。页面 `view` 与 Action 分开：看见页面不表示能修改数据，也不表示 AI 可以调用页面中的 Action。旧系统没有 v2.5 Manifest 时可以继续按整站 iframe 或旧契约兼容授权，但必须在管理员界面标记为兼容模式，不能自动生成 v2.5 AI 工具。
 
 ## 双层鉴权
 
@@ -122,7 +174,7 @@ applicationSlug
 
 灼见先检查 `moduleKey` 的 `view` 权限，再签发 `typ=zhuojian-sso` 短票据。模块验证签名、`iss=zhuojian-saas`、`aud=applicationSlug`、`typ`、`exp`、企业、用户、`moduleKey`、权限和一次性 `jti`。`redirect` 必须是站内相对路径且命中获授权页面。成功后建立 `HttpOnly; Secure; SameSite=Lax` 会话并 302 到不含票据的页面。
 
-v2.4 SSO 票据还必须包含管理员基于平台角色计算出的最终页面和操作 allowlist，模块不得用 Manifest 的部门责任或 `accessRoles` 建议值替代平台最终授权：
+v2.5 SSO 票据必须继续包含 v2.4 引入的最终页面和操作 allowlist。该 allowlist 由管理员基于平台角色计算，模块不得用 Manifest 的部门责任或 `accessRoles` 建议值替代平台最终授权：
 
 ```json
 {
