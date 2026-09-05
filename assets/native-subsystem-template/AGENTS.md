@@ -11,6 +11,7 @@
 - 不提交 `.env`、密码、Token、私钥、生产数据或数据库文件。
 - 平台接入固定使用 v2.5 四类凭证：Manifest/事件拉取只用 `zjmf_`，SSO 换码只用 `zjss_`，Action JWT 只用 `zjac_`，事件投递 JWT 只用 `zjev_`；禁止兼容回单一共享 Secret。
 - SSO 入口只接收 `code`、`redirect`、`launch_nonce`，由后端向固定 `ZHUOJIAN_SAAS_ORIGIN` 换取声明并严格复验绑定关系和 120 秒时效；浏览器不得直接持有项目凭证。
+- iframe 内隐藏系统级导航和外壳，使用灼见统一导航；独立打开时保留自身导航。不得删除模板的首屏嵌入模式标记。
 - 完整 SSO claims 只存服务端 `browser_sessions`；页面查看和 Action 必须调用 SaaS session-check 取得当前资源数据范围并在撤权时失败关闭。
 - 通用 create/update 禁止直接写 `status` 等受控状态；审批、删除和其他状态迁移只能走对应 Action，其中审批和删除不得取消确认。
 - 不删除已有数据卷；变更前后运行单元测试、协议验证和浏览器冒烟。

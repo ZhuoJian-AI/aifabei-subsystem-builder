@@ -16,6 +16,7 @@ ZHUOJIAN_EVENT_SIGNING_SECRET
 /api/v1/subsystem-sso/exchange
 launch_nonce
 zhuojian:context
+if (window.parent !== window) document.documentElement.setAttribute("data-zhuojian-embedded", "true")
 window.parent.postMessage(message, "https://saas.example.com")
 """
 
@@ -109,6 +110,20 @@ def test_validator_rejects_each_missing_v25_credential(
     assert result.returncode == 1
     assert "未实现 v2.5 分用途凭证" in result.stdout
     assert credential in result.stdout
+
+
+def test_validator_rejects_missing_native_embedded_mode(tmp_path: Path):
+    project = write_valid_project(tmp_path)
+    source = (project / "app.py").read_text(encoding="utf-8")
+    (project / "app.py").write_text(
+        source.replace("data-zhuojian-embedded", "missing-embedded-marker"),
+        encoding="utf-8",
+    )
+
+    result = run_validator(project)
+
+    assert result.returncode == 1
+    assert "未实现 iframe 原生嵌入模式" in result.stdout
 
 
 def test_validator_ignores_documentation_and_test_fixtures(tmp_path: Path):
