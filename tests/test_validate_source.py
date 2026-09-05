@@ -126,6 +126,37 @@ def test_validator_rejects_missing_native_embedded_mode(tmp_path: Path):
     assert "未实现 iframe 原生嵌入模式" in result.stdout
 
 
+def test_validator_rejects_nested_iframe_without_same_origin_ancestor(tmp_path: Path):
+    project = write_valid_project(tmp_path)
+    (project / "index.html").write_text(
+        '<iframe src="/detail"></iframe>', encoding="utf-8"
+    )
+    with (project / "app.py").open("a", encoding="utf-8") as source:
+        source.write(
+            '\nContent-Security-Policy: frame-ancestors https://saas.example.com\n'
+        )
+
+    result = run_validator(project)
+
+    assert result.returncode == 1
+    assert "frame-ancestors 未包含 'self'" in result.stdout
+
+
+def test_validator_accepts_nested_iframe_with_same_origin_ancestor(tmp_path: Path):
+    project = write_valid_project(tmp_path)
+    (project / "index.html").write_text(
+        '<iframe src="/detail"></iframe>', encoding="utf-8"
+    )
+    with (project / "app.py").open("a", encoding="utf-8") as source:
+        source.write(
+            "\nContent-Security-Policy: frame-ancestors 'self' https://saas.example.com\n"
+        )
+
+    result = run_validator(project)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
 def test_validator_ignores_documentation_and_test_fixtures(tmp_path: Path):
     project = write_valid_project(tmp_path)
     docs = project / "docs"

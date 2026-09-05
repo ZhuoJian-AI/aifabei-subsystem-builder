@@ -107,6 +107,11 @@ REQUIRED_INTEGRATION_MARKERS = {
     "launch_nonce",
 }
 EMBEDDED_MODE_MARKER = "data-zhuojian-embedded"
+NESTED_IFRAME = re.compile(r"<iframe\b|createElement\s*\(\s*(['\"])iframe\1", re.IGNORECASE)
+FRAME_ANCESTOR_DIRECTIVE = re.compile(
+    r"frame-ancestors(?P<sources>[^;\r\n]{0,500})",
+    re.IGNORECASE,
+)
 
 
 def uses_model_provider_sdk(path: Path, text: str) -> bool:
@@ -162,6 +167,8 @@ def main() -> int:
 
     context_found = False
     embedded_mode_found = False
+    nested_iframe_found = False
+    unsafe_frame_ancestor_files: set[Path] = set()
     page_scope_tokens: set[str] = set()
     integration_markers: set[str] = set()
     storage_markers: set[str] = set()
@@ -170,6 +177,12 @@ def main() -> int:
         text = path.read_text(encoding="utf-8", errors="replace")
         context_found = context_found or "zhuojian:context" in text
         embedded_mode_found = embedded_mode_found or EMBEDDED_MODE_MARKER in text
+        nested_iframe_found = nested_iframe_found or bool(NESTED_IFRAME.search(text))
+        if any(
+            "'self'" not in match.group("sources")
+            for match in FRAME_ANCESTOR_DIRECTIVE.finditer(text)
+        ):
+            unsafe_frame_ancestor_files.add(path.relative_to(root))
         page_scope_tokens.update(
             token for token in (
                 "pageKeys", "actionKeys", "pageAccess", "roleIds", "effectiveDataScope"
@@ -218,6 +231,12 @@ def main() -> int:
     if not embedded_mode_found:
         failures.append(
             "未实现 iframe 原生嵌入模式：页面需要在嵌入时隐藏自身系统级导航"
+        )
+    if nested_iframe_found and unsafe_frame_ancestor_files:
+        failures.append(
+            "系统包含内层 iframe，但以下 frame-ancestors 未包含 'self'，"
+            "会阻断同源业务页面："
+            + ", ".join(sorted(str(path) for path in unsafe_frame_ancestor_files))
         )
     missing_scope = {
         "pageKeys", "actionKeys", "pageAccess", "roleIds", "effectiveDataScope"
