@@ -106,6 +106,7 @@ REQUIRED_INTEGRATION_MARKERS = {
     "/api/v1/subsystem-sso/exchange",
     "launch_nonce",
 }
+EMBEDDED_MODE_MARKER = "data-zhuojian-embedded"
 
 
 def uses_model_provider_sdk(path: Path, text: str) -> bool:
@@ -160,6 +161,7 @@ def main() -> int:
         parser.error(f"目录不存在：{root}")
 
     context_found = False
+    embedded_mode_found = False
     page_scope_tokens: set[str] = set()
     integration_markers: set[str] = set()
     storage_markers: set[str] = set()
@@ -167,6 +169,7 @@ def main() -> int:
     for path in source_files(root):
         text = path.read_text(encoding="utf-8", errors="replace")
         context_found = context_found or "zhuojian:context" in text
+        embedded_mode_found = embedded_mode_found or EMBEDDED_MODE_MARKER in text
         page_scope_tokens.update(
             token for token in (
                 "pageKeys", "actionKeys", "pageAccess", "roleIds", "effectiveDataScope"
@@ -212,6 +215,10 @@ def main() -> int:
 
     if not context_found:
         failures.append("未找到 zhuojian:context 页面上下文 Bridge")
+    if not embedded_mode_found:
+        failures.append(
+            "未实现 iframe 原生嵌入模式：页面需要在嵌入时隐藏自身系统级导航"
+        )
     missing_scope = {
         "pageKeys", "actionKeys", "pageAccess", "roleIds", "effectiveDataScope"
     } - page_scope_tokens
@@ -256,7 +263,7 @@ def main() -> int:
         return 1
     print(
         "SOURCE VALIDATION PASS: platform model credentials are absent; "
-        "bridge origin and v2.5 SSO/page/action/resource-scoped data access are present"
+        "embedded shell, bridge origin and v2.5 SSO/page/action/resource-scoped data access are present"
     )
     return 0
 
