@@ -142,8 +142,22 @@ def validate_action_contract(action: dict, label: str) -> None:
     elif action.get("aiEnabled"):
         warn(f"{label}.aiTool 未提供；平台将使用 description 生成基础工具，不阻断登记。")
 
-    validate_schema(action["inputSchema"], f"{label}.inputSchema", require_object_root=True)
+    input_schema = action["inputSchema"]
+    validate_schema(input_schema, f"{label}.inputSchema", require_object_root=True)
     validate_schema(action["resultSchema"], f"{label}.resultSchema", require_object_root=False)
+
+    operation = action.get("operation")
+    if action.get("aiEnabled") and operation in {"create", "update", "delete", "approve"}:
+        properties = input_schema.get("properties")
+        required = input_schema.get("required")
+        if not isinstance(properties, dict) or not properties:
+            raise SystemExit(f"{label}.inputSchema 必须声明真实业务字段，不能让 AI 猜参数。")
+        if not isinstance(required, list) or not required:
+            raise SystemExit(f"{label}.inputSchema.required 必须声明目标或必填业务字段。")
+        if input_schema.get("additionalProperties") is not False:
+            raise SystemExit(f"{label}.inputSchema.additionalProperties 必须为 false。")
+    if action.get("aiEnabled") and operation in {"delete", "approve"} and not action.get("requiresConfirmation"):
+        raise SystemExit(f"{label} 的删除或审批操作必须 requiresConfirmation=true。")
 
 
 def main() -> int:

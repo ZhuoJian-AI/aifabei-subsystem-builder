@@ -60,9 +60,9 @@ ECS 管理员只需在 Runtime 初始化时建立通配域名、HTTPS `443` 和 
 | 权限与风险 | 页面 `actionKeys`、`aiEnabled`、`requiresConfirmation`、平台授权 | 不进入模型可改参数 |
 | HTTP 封装 | 平台登记目录 | URL、JWT、`requestId/moduleKey/pageKey/operation` 由平台填写 |
 
-`inputSchema` 描述 Action 请求体中的 `params`，不是整个 HTTP 请求。模型只生成业务参数；平台生成 `requestId`，从登记目录确定应用、模块、页面、Action 和操作类型。`update/delete` 所需 `expectedVersion` 必须来自最近一次获授权查询或 Bridge 页面上下文；没有可信版本时先查询或要求用户刷新，禁止让模型猜测版本号。
+`inputSchema` 描述 Action 请求体中的 `params`，不是整个 HTTP 请求。模型只生成业务参数；平台生成 `requestId`，从登记目录确定应用、模块、页面、Action 和操作类型。AI 可执行的 `create/update/delete/approve` 必须列出真实业务 `properties`、必填的目标或业务字段，并设置 `additionalProperties=false`，禁止使用空对象 Schema 让模型猜参数。`update/delete/approve` 所需 `expectedVersion` 必须来自最近一次获授权查询或 Bridge 页面上下文；没有可信版本时先查询或要求用户刷新，禁止让模型猜测版本号。
 
-本 Skill 对 v2.5 Action 的最小构建要求只有“描述 + 接口能力”：每个 Action 提供非空 `description`，以及 `actionKey/operation/inputSchema/resultSchema/aiEnabled/requiresConfirmation`；其中 `inputSchema` 是根类型为 `object` 的 JSON Schema，`resultSchema` 是 JSON Schema 对象。这样平台不需要管理员逐条写说明，就能把已授权 Action 生成基础 AI 工具。
+本 Skill 对 v2.5 Action 的最小构建要求是“描述 + 真实接口能力”：每个 Action 提供非空 `description`，以及 `actionKey/operation/inputSchema/resultSchema/aiEnabled/requiresConfirmation`；其中 `inputSchema` 是根类型为 `object` 的 JSON Schema，`resultSchema` 是 JSON Schema 对象。查询应支持必要筛选和 `limit`，默认只返回足够完成任务的数据，每条可修改记录返回 `dataVersion`。删除和审批必须确认，确认内容必须显示具体目标与参数，不能让用户确认一个空目标。这样平台不需要管理员逐条写说明，就能把已授权 Action 生成可靠的基础 AI 工具。
 
 整个 `aiTool` 都是可选的推荐增强项。脚手架默认生成，缺少时本 Skill 验收器给出警告，但不能仅因缺少这些字段阻断登记；当前 SaaS 可忽略它：
 
@@ -228,7 +228,7 @@ Action JWT 使用该系统专属 `zjac_` 密钥和 `typ=zhuojian-action`，至�
 }
 ```
 
-`update` 和 `delete` 必须携带 `expectedVersion`，与当前实体版本不一致时返回 HTTP 409。模块按 `applicationSlug + requestId` 幂等保存结果，页面按钮和 Action HTTP 入口调用同一应用服务函数。
+`update`、`delete` 和 `approve` 必须携带 `expectedVersion`，与当前实体版本不一致时返回 HTTP 409。模块按 `applicationSlug + requestId` 幂等保存结果，页面按钮和 Action HTTP 入口调用同一应用服务函数。
 
 ### 高风险确认
 
