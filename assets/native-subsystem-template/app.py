@@ -1005,7 +1005,7 @@ async def security_headers(request: Request, call_next):
                 content={"detail": "Same-origin UI request required"},
             )
     response = await call_next(request)
-    response.headers["Content-Security-Policy"] = "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; frame-ancestors " + " ".join(SAAS_ORIGINS)
+    response.headers["Content-Security-Policy"] = "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; frame-ancestors 'self' " + " ".join(SAAS_ORIGINS)
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["Referrer-Policy"] = "strict-origin"
     return response

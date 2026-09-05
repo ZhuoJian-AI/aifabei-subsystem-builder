@@ -45,10 +45,12 @@ def test_scaffold_defaults_to_the_canonical_alphabet_identity(tmp_path: Path):
 
     manifest = json.loads((project / "subsystem.json").read_text(encoding="utf-8"))
     page = (project / "static" / "index.html").read_text(encoding="utf-8")
+    app = (project / "app.py").read_text(encoding="utf-8")
     assert manifest["enterprise"]["key"] == "alphabet"
     assert "enterprise_key:'alphabet'" in page
     assert "data-zhuojian-embedded" in page
     assert page.index("data-zhuojian-embedded") < page.index("<style>")
+    assert "frame-ancestors 'self' " in app
 
 
 def test_scaffolded_native_system_runs_its_security_and_recovery_suite(tmp_path: Path):
