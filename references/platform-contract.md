@@ -64,6 +64,8 @@ ECS 管理员只需在 Runtime 初始化时建立通配域名、HTTPS `443` 和 
 
 本 Skill 对 v2.5 Action 的最小构建要求是“描述 + 真实接口能力”：每个 Action 提供非空 `description`，以及 `actionKey/operation/inputSchema/resultSchema/aiEnabled/requiresConfirmation`；其中 `inputSchema` 是根类型为 `object` 的 JSON Schema，`resultSchema` 是 JSON Schema 对象。查询应支持必要筛选和 `limit`，默认只返回足够完成任务的数据，每条可修改记录返回 `dataVersion`。删除和审批必须确认，确认内容必须显示具体目标与参数，不能让用户确认一个空目标。这样平台不需要管理员逐条写说明，就能把已授权 Action 生成可靠的基础 AI 工具。
 
+所有 Action 的返回值都不得包含服务器文件路径、数据库路径、连接串或备份位置；这些内部信息既不能写入 `resultSchema`，也不能通过嵌套字段送入 SaaS 或模型。
+
 ### 导出 Action 的统一数据集
 
 `operation=export` 只返回权限过滤后的有界分页数据，不在业务 ECS 生成文件、数据库备份或服务器路径。返回 Schema 必须封闭并精确包含：

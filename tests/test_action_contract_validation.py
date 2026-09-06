@@ -124,6 +124,26 @@ class ActionContractValidationTests(unittest.TestCase):
                 action("export", schema=self.export_input(), result_schema=result), "action",
             )
 
+    def test_query_rejects_nested_database_path(self) -> None:
+        result = {
+            "type": "object",
+            "properties": {
+                "metadata": {
+                    "type": "object",
+                    "properties": {"dbPath": {"type": "string"}},
+                },
+            },
+        }
+        with self.assertRaisesRegex(SystemExit, "服务器路径"):
+            MODULE.validate_action_contract(
+                action(
+                    "query",
+                    schema={"type": "object", "properties": {}},
+                    result_schema=result,
+                ),
+                "action",
+            )
+
     def test_standard_export_dataset_passes(self) -> None:
         MODULE.validate_action_contract(
             action("export", schema=self.export_input(), result_schema=self.export_result()), "action",

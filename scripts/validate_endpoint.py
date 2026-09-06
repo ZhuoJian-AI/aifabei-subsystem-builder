@@ -97,9 +97,21 @@ def validate_schema(schema: dict, label: str, *, require_object_root: bool) -> N
 EXPORT_RESULT_FIELDS = {
     "snapshotId", "snapshotAt", "columns", "rows", "rowCount", "nextCursor",
 }
-FORBIDDEN_EXPORT_FIELD_FRAGMENTS = {
-    "backuppath", "serverpath", "filesystempath", "localpath", "databasepath", "contentref",
+FORBIDDEN_ACTION_RESULT_FIELD_FRAGMENTS = {
+    "backuppath", "serverpath", "filesystempath", "localpath", "databasepath", "dbpath",
+    "databaseurl", "connectionstring", "contentref",
 }
+
+
+def reject_server_path_fields(schema: object, label: str) -> None:
+    if not isinstance(schema, dict):
+        return
+    for field_name, child in (schema.get("properties") or {}).items():
+        normalized = str(field_name).replace("_", "").casefold()
+        if any(fragment in normalized for fragment in FORBIDDEN_ACTION_RESULT_FIELD_FRAGMENTS):
+            raise SystemExit(f"{label} 不得声明服务器路径、数据库连接或备份字段。")
+        reject_server_path_fields(child, label)
+    reject_server_path_fields(schema.get("items"), label)
 
 
 def validate_export_schema(action: dict, label: str) -> None:
@@ -166,19 +178,6 @@ def validate_export_schema(action: dict, label: str) -> None:
     ):
         raise SystemExit(f"{label}.resultSchema.properties.nextCursor 必须允许 string 或 null。")
 
-    def reject_path_fields(schema: object) -> None:
-        if not isinstance(schema, dict):
-            return
-        for field_name, child in (schema.get("properties") or {}).items():
-            normalized = str(field_name).replace("_", "").casefold()
-            if any(fragment in normalized for fragment in FORBIDDEN_EXPORT_FIELD_FRAGMENTS):
-                raise SystemExit(f"{label}.resultSchema 不得声明服务器路径或备份字段。")
-            reject_path_fields(child)
-        reject_path_fields(schema.get("items"))
-
-    reject_path_fields(result_schema)
-
-
 def validate_action_contract(action: dict, label: str) -> None:
     description = require_text(action.get("description"), f"{label}.description")
     if description.lower() in {"todo", "tbd", "placeholder", "execute action"} or description in {"执行操作", "处理数据"}:
@@ -229,7 +228,9 @@ def validate_action_contract(action: dict, label: str) -> None:
 
     input_schema = action["inputSchema"]
     validate_schema(input_schema, f"{label}.inputSchema", require_object_root=True)
-    validate_schema(action["resultSchema"], f"{label}.resultSchema", require_object_root=False)
+    result_schema = action["resultSchema"]
+    validate_schema(result_schema, f"{label}.resultSchema", require_object_root=False)
+    reject_server_path_fields(result_schema, f"{label}.resultSchema")
 
     operation = action.get("operation")
     if operation == "export":
