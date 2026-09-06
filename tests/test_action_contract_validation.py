@@ -49,7 +49,10 @@ class ActionContractValidationTests(unittest.TestCase):
                     "type": {"type": "string", "enum": ["string", "number"], "description": "类型"},
                 },
             }},
-            "rows": {"type": "array", "description": "行", "items": {"type": "object"}},
+            "rows": {"type": "array", "description": "行", "items": {
+                "type": "object",
+                "additionalProperties": {"type": ["string", "number", "boolean", "null"]},
+            }},
             "rowCount": {"type": "integer", "description": "总数"},
             "nextCursor": {"type": ["string", "null"], "description": "游标"},
         }
@@ -120,6 +123,22 @@ class ActionContractValidationTests(unittest.TestCase):
             "properties": {"backupPath": {"type": "string", "description": "备份位置"}},
         }
         with self.assertRaisesRegex(SystemExit, "服务器路径"):
+            MODULE.validate_action_contract(
+                action("export", schema=self.export_input(), result_schema=result), "action",
+            )
+
+    def test_export_rejects_unbounded_or_nested_row_values(self) -> None:
+        result = self.export_result()
+        result["properties"]["rows"]["items"] = {"type": "object"}
+        with self.assertRaisesRegex(SystemExit, "标量字段白名单"):
+            MODULE.validate_action_contract(
+                action("export", schema=self.export_input(), result_schema=result), "action",
+            )
+        result["properties"]["rows"]["items"] = {
+            "type": "object",
+            "additionalProperties": {"type": "object"},
+        }
+        with self.assertRaisesRegex(SystemExit, "只能声明"):
             MODULE.validate_action_contract(
                 action("export", schema=self.export_input(), result_schema=result), "action",
             )

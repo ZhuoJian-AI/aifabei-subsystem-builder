@@ -330,6 +330,74 @@ class ActionRouteTests(unittest.TestCase):
             self.assertEqual(accepted.status_code, 200, accepted.text)
             self.assertEqual(rejected.status_code, 401, rejected.text)
 
+    def test_export_returns_one_frozen_opaque_dataset_without_creating_files(self):
+        batch = "export-" + uuid4().hex
+        for index in range(3):
+            request_id = uuid4().hex
+            created = self.post_integration(
+                "create",
+                self.action_body(
+                    "create",
+                    request_id,
+                    {
+                        "id": uuid4().hex,
+                        "data": {"name": f"记录 {index}", "batch": batch},
+                    },
+                ),
+            )
+            self.assertEqual(created.status_code, 200, created.text)
+
+        storage_root = Path(os.environ["FILE_STORAGE_ROOT"])
+        before_files = sorted(
+            str(path.relative_to(storage_root))
+            for path in storage_root.rglob("*")
+            if path.is_file()
+        ) if storage_root.exists() else []
+        first_id = uuid4().hex
+        first = self.post_integration(
+            "export",
+            self.action_body(
+                "export",
+                first_id,
+                {"filters": {"batch": batch}, "limit": 2},
+            ),
+        )
+        self.assertEqual(first.status_code, 200, first.text)
+        first_page = first.json()
+        self.assertEqual(first_page["rowCount"], 3)
+        self.assertEqual(len(first_page["rows"]), 2)
+        self.assertTrue(first_page["snapshotId"])
+        self.assertTrue(first_page["nextCursor"])
+        self.assertNotIn("/", first_page["nextCursor"])
+
+        second_params = {
+            "filters": {"batch": batch},
+            "limit": 2,
+            "snapshotId": first_page["snapshotId"],
+            "nextCursor": first_page["nextCursor"],
+        }
+        second_id = uuid4().hex
+        second = self.post_integration(
+            "export",
+            self.action_body("export", second_id, second_params),
+        )
+        self.assertEqual(second.status_code, 200, second.text)
+        second_page = second.json()
+        self.assertEqual(second_page["snapshotId"], first_page["snapshotId"])
+        self.assertEqual(second_page["snapshotAt"], first_page["snapshotAt"])
+        self.assertEqual(len(second_page["rows"]), 1)
+        self.assertIsNone(second_page["nextCursor"])
+        self.assertEqual(
+            {row["name"] for row in [*first_page["rows"], *second_page["rows"]]},
+            {"记录 0", "记录 1", "记录 2"},
+        )
+        after_files = sorted(
+            str(path.relative_to(storage_root))
+            for path in storage_root.rglob("*")
+            if path.is_file()
+        ) if storage_root.exists() else []
+        self.assertEqual(after_files, before_files)
+
     def test_sso_exchange_uses_fixed_url_and_dedicated_bearer(self):
         payload = json.loads(json.dumps(self.sso_exchange_payload))
         nonce = "different_launch_nonce_for_binding_test"

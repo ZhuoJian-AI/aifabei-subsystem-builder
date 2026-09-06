@@ -67,6 +67,8 @@ ACTION_SIGNING_SECRET = os.getenv("ZHUOJIAN_ACTION_SIGNING_SECRET", "")
 EVENT_SIGNING_SECRET = os.getenv("ZHUOJIAN_EVENT_SIGNING_SECRET", "")
 SESSION_SECRET = os.getenv("SESSION_SECRET", "")
 EXPECTED_ORGANIZATION_ID = os.getenv("ZHUOJIAN_ORGANIZATION_ID", "")
+EXPORT_SNAPSHOT_TTL_SECONDS = 600
+EXPORT_SNAPSHOT_MAX_ROWS = 10_000
 
 
 def canonical_https_origin(value: str, label: str) -> str:
@@ -503,6 +505,20 @@ def init_db() -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_stored_files_module_created
           ON stored_files(module_key, created_at DESC);
+        CREATE TABLE IF NOT EXISTS export_snapshots (
+          snapshot_id TEXT PRIMARY KEY, binding_hash TEXT NOT NULL,
+          rows_json TEXT NOT NULL, columns_json TEXT NOT NULL,
+          row_count INTEGER NOT NULL, snapshot_at TEXT NOT NULL,
+          expires_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS export_cursors (
+          cursor_token TEXT PRIMARY KEY, snapshot_id TEXT NOT NULL,
+          row_offset INTEGER NOT NULL, expires_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_export_snapshots_expiry
+          ON export_snapshots(expires_at);
+        CREATE INDEX IF NOT EXISTS idx_export_cursors_snapshot_offset
+          ON export_cursors(snapshot_id, row_offset);
         """)
         request_columns = {
             row["name"] for row in connection.execute("PRAGMA table_info(request_results)")
@@ -1614,6 +1630,165 @@ def emit_event(connection: sqlite3.Connection, module_key: str, event_type: str,
     )
 
 
+def _export_column_type(value: Any) -> str:
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, (int, float)):
+        return "number"
+    return "string"
+
+
+def _export_scalar(value: Any) -> str | int | float | bool | None:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    # The standard dataset contains flat cells.  Nested business values remain
+    # readable without handing arbitrary object structures to the file executor.
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _export_binding_hash(action: dict, actor: dict, filters: dict) -> str:
+    return canonical_hash({
+        "applicationSlug": APP_SLUG,
+        "actionKey": action["actionKey"],
+        "moduleKey": action["moduleKey"],
+        "organizationId": actor.get("organizationId"),
+        "userId": actor.get("sub"),
+        "departmentId": actor.get("departmentId"),
+        "departmentIds": actor.get("departmentIds") or [],
+        "effectiveDataScope": actor.get("effectiveDataScope") or {},
+        "filters": filters,
+    })
+
+
+def _export_matches(row: dict[str, Any], filters: dict[str, Any]) -> bool:
+    return all(row.get(str(key)) == value for key, value in filters.items())
+
+
+def execute_export_action(
+    action: dict,
+    params: dict,
+    actor: dict,
+    connection: sqlite3.Connection,
+) -> dict:
+    """Return one opaque, short-lived page from a server-side frozen snapshot."""
+
+    limit = params.get("limit", 200)
+    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 500:
+        raise HTTPException(422, "Export limit must be an integer between 1 and 500")
+    filters = params.get("filters") or {}
+    if not isinstance(filters, dict) or len(filters) > 50:
+        raise HTTPException(422, "Export filters must be a bounded object")
+    if any(isinstance(value, (dict, list)) for value in filters.values()):
+        raise HTTPException(422, "Export filter values must be scalar")
+    snapshot_id = str(params.get("snapshotId") or "").strip()
+    cursor_token = str(params.get("nextCursor") or "").strip()
+    if bool(snapshot_id) != bool(cursor_token):
+        raise HTTPException(422, "snapshotId and nextCursor must be supplied together")
+
+    now_epoch = int(time.time())
+    connection.execute("DELETE FROM export_cursors WHERE expires_at<=?", (now_epoch,))
+    connection.execute("DELETE FROM export_snapshots WHERE expires_at<=?", (now_epoch,))
+    binding_hash = _export_binding_hash(action, actor, filters)
+
+    if not snapshot_id:
+        scope_sql, scope_values = scoped_records_clause(actor)
+        selected = connection.execute(
+            "SELECT id,data,status,version,department_id,created_by,updated_at FROM records "
+            f"WHERE module_key=?{scope_sql} ORDER BY updated_at DESC,id LIMIT ?",
+            [action["moduleKey"], *scope_values, EXPORT_SNAPSHOT_MAX_ROWS + 1],
+        ).fetchall()
+        if len(selected) > EXPORT_SNAPSHOT_MAX_ROWS:
+            raise HTTPException(413, "Export result is too large; narrow the filters")
+        rows: list[dict[str, Any]] = []
+        column_order: list[str] = []
+        column_types: dict[str, str] = {}
+        for selected_row in selected:
+            business = json.loads(selected_row["data"])
+            flattened = {
+                **{str(key): _export_scalar(value) for key, value in business.items()},
+                "id": selected_row["id"],
+                "status": selected_row["status"],
+                "dataVersion": selected_row["version"],
+            }
+            if not _export_matches(flattened, filters):
+                continue
+            rows.append(flattened)
+            for key, value in flattened.items():
+                if key not in column_types:
+                    column_order.append(key)
+                    column_types[key] = _export_column_type(value)
+                elif value is not None and column_types[key] == "string":
+                    column_types[key] = _export_column_type(value)
+        columns = [
+            {"key": key, "label": key, "type": column_types[key]}
+            for key in column_order
+        ]
+        snapshot_id = secrets.token_urlsafe(24)
+        snapshot_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        expires_at = now_epoch + EXPORT_SNAPSHOT_TTL_SECONDS
+        connection.execute(
+            "INSERT INTO export_snapshots("
+            "snapshot_id,binding_hash,rows_json,columns_json,row_count,snapshot_at,expires_at"
+            ") VALUES(?,?,?,?,?,?,?)",
+            (
+                snapshot_id,
+                binding_hash,
+                json.dumps(rows, ensure_ascii=False, separators=(",", ":")),
+                json.dumps(columns, ensure_ascii=False, separators=(",", ":")),
+                len(rows),
+                snapshot_at,
+                expires_at,
+            ),
+        )
+        row_offset = 0
+    else:
+        stored = connection.execute(
+            "SELECT * FROM export_snapshots WHERE snapshot_id=? AND expires_at>?",
+            (snapshot_id, now_epoch),
+        ).fetchone()
+        cursor = connection.execute(
+            "SELECT row_offset FROM export_cursors "
+            "WHERE cursor_token=? AND snapshot_id=? AND expires_at>?",
+            (cursor_token, snapshot_id, now_epoch),
+        ).fetchone()
+        if stored is None or cursor is None:
+            raise HTTPException(410, "Export snapshot or cursor has expired")
+        if not hmac.compare_digest(str(stored["binding_hash"]), binding_hash):
+            raise HTTPException(403, "Export permission scope changed")
+        rows = json.loads(stored["rows_json"])
+        columns = json.loads(stored["columns_json"])
+        snapshot_at = stored["snapshot_at"]
+        expires_at = int(stored["expires_at"])
+        row_offset = int(cursor["row_offset"])
+
+    page_rows = rows[row_offset:row_offset + limit]
+    next_offset = row_offset + len(page_rows)
+    next_cursor: str | None = None
+    if next_offset < len(rows):
+        existing_cursor = connection.execute(
+            "SELECT cursor_token FROM export_cursors WHERE snapshot_id=? AND row_offset=? AND expires_at>?",
+            (snapshot_id, next_offset, now_epoch),
+        ).fetchone()
+        next_cursor = (
+            str(existing_cursor["cursor_token"])
+            if existing_cursor is not None
+            else secrets.token_urlsafe(24)
+        )
+        connection.execute(
+            "INSERT OR IGNORE INTO export_cursors(cursor_token,snapshot_id,row_offset,expires_at) "
+            "VALUES(?,?,?,?)",
+            (next_cursor, snapshot_id, next_offset, expires_at),
+        )
+    return {
+        "snapshotId": snapshot_id,
+        "snapshotAt": snapshot_at,
+        "columns": columns,
+        "rows": page_rows,
+        "rowCount": len(rows),
+        "nextCursor": next_cursor,
+    }
+
+
 def execute_business_action(
     action: dict,
     params: dict,
@@ -1633,6 +1808,8 @@ def execute_business_action(
     operation = action["operation"]
     module_key = action["moduleKey"]
     now = datetime.now(timezone.utc).isoformat()
+    if operation == "export":
+        return execute_export_action(action, params, actor, connection)
     if operation == "query":
         scope_sql, scope_values = scoped_records_clause(actor)
         rows = connection.execute(
@@ -1722,8 +1899,6 @@ def execute_business_action(
         connection.execute("DELETE FROM records WHERE id=?", (record_id,))
         emit_event(connection, module_key, f"{module_key}.deleted.v1", record_id, {"version": row["version"]})
         return {"id": record_id, "deleted": True}
-    if operation == "export":
-        return {"id": record_id, "record": {**json.loads(row["data"]), "status": row["status"], "version": row["version"]}}
     raise HTTPException(422, "Unsupported business operation")
 
 

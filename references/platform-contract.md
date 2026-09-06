@@ -83,6 +83,30 @@ nextCursor   # 下一页不透明游标；末页为 null
 
 `artifact` 只能由 SaaS 工作空间文件服务成功提交后产生，必须带稳定 `fileId/versionId/workspaceId/canonicalPath`、文件大小、SHA-256 及应用/模块/页面/Action/请求/快照来源。模型正文、Action 文本和服务器路径都不能推断成文件。用户要求生成或导出文件时，没有成功文件工具结果和有效文件身份就必须明确失败，不能用 Markdown 表格冒充交付。
 
+### SaaS 文件执行器与格式边界
+
+基于当前业务数据生成文件时，平台必须优先提供一个复合工具 `business_export_to_workspace_file`，并在服务端固定执行以下链路：校验员工和当前页面 Action → 连续读取同一分页快照 → 校验每页 `resultSchema` → 在一次性沙箱生成文件 → 重新打开并验证 → 提交当前员工获权的工作空间 → 持久化 `artifact` → 返回文件卡片 → 标记完成。复合工具启用时，不得同时向模型暴露“普通 Action 查询 + 普通文件创建”这条可绕开的组合。组织、员工、应用、模块、页面和 Action 身份都由平台注入，模型不能提交或修改这些身份。
+
+平台文件能力由唯一的能力注册表决定，不能由子系统 Manifest 声称。新产物默认使用 `.xlsx/.docx/.pptx/.pdf/.md/.txt`；`.csv/.tsv` 只有用户明确要求时输出。旧格式 `.xls/.doc/.ppt` 及 `.xlsb/.xlsm/.ods/.et/.docm/.rtf/.odt/.wps/.pptm/.pps/.ppsx/.odp/.dps` 可以按平台实际启用能力读取、预览和转换；编辑前生成现代格式副本，不原地覆盖旧文件。用户明确要求旧格式时，先生成并验证现代格式，再真实转换成旧格式，只提交最终产物，禁止只改扩展名。
+
+宏和外部主动内容永不执行，外部链接不访问；无法证明宏包完整保留时，平台只生成不含宏的现代格式副本并用中文说明。CSV/TSV 不承载样式、公式或多个工作表，多工作表转换时必须明确指定工作表。PDF 只承诺生成、读取/OCR、合并、拆分、抽页和转换，不得宣称可以无损编辑任意 PDF 版式。Markdown 使用 CommonMark；大文本分页读取，不得静默截断。
+
+模型只生成结构化内容和严格工具参数，真实文件由 SaaS 可信执行器产生。平台文件工具按操作拆分为 `*_create/inspect/edit/convert`（PDF 另含 `merge/split/extract`），嵌套字段必须是实际数组或对象，不能把 `sheets/slides/operations` 序列化成 JSON 字符串。模型供应商支持严格工具 Schema 时使用严格模式；无论供应商是否支持，SaaS 都必须再次校验并拒绝额外字段。
+
+生成、转换和编辑必须在一次性沙箱内完成，并至少校验：非空和大小限制、扩展名/MIME/文件头一致、OOXML 包结构、Excel 工作表、Word 主要段落与表格、PPT 幻灯片数、PDF 页数和可渲染性、文本声明编码以及 SHA-256。宏、路径穿越、压缩炸弹和主动内容必须在提交前拦截。编辑已有文件必须带稳定 `fileId + baseVersionId + idempotencyKey`；版本变化时返回中文冲突，不得覆盖新版本。临时文件在运行结束后清理，子系统 ECS 不保存 SaaS AI 的临时文件或最终文件。
+
+`artifact` 事件顺序固定为：工具完成 → 文件验证 → 工作空间提交 → `artifact` → assistant message → `done`。文件型请求只有 `artifacts` 非空才可标记 `completed`；Action 成功而文件失败时整轮失败。`runId + toolCallId` 是副作用幂等键，SSE 重连按持久化事件重放，前端按 `fileId + versionId` 去重。预览和下载始终通过 `fileId` 实时鉴权，不把长期签名 URL 写入聊天。删除消息或对话只删除引用，不删除已交付的工作空间文件。
+
+完整验收必须分别给出三项结果：
+
+```text
+subsystem_contract_pass     # 子系统 Manifest、权限过滤和标准分页 Action 通过
+saas_format_capability_pass # SaaS 当前文件能力、真实格式生成与重新打开验证通过
+saas_artifact_e2e_pass      # 真实员工从业务助手拿到可预览、可下载的工作空间文件卡片
+```
+
+只运行本 Skill 的子系统端点检查最多能证明第一项；不得用它代替 SaaS 自动化测试账号完成的跨系统 Artifact 端到端验收。只有三项全部通过，才可以向用户宣称“完整遵循契约”。
+
 整个 `aiTool` 都是可选的推荐增强项。脚手架默认生成，缺少时本 Skill 验收器给出警告，但不能仅因缺少这些字段阻断登记；当前 SaaS 可忽略它：
 
 - `whenToUse`：什么用户意图和业务条件下应选择该工具；

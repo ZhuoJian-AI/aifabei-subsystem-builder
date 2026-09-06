@@ -65,12 +65,71 @@ def json_request(
         return exc.code, detail
 
 
+def persistent_file_inventory(paths: list[Path]) -> dict[str, tuple[int, int]]:
+    """Capture file size and mtime without reading or changing business data."""
+
+    inventory: dict[str, tuple[int, int]] = {}
+    for root in paths:
+        resolved = root.expanduser().resolve()
+        if not resolved.exists():
+            continue
+        candidates = [resolved] if resolved.is_file() else resolved.rglob("*")
+        for candidate in candidates:
+            if candidate.is_file():
+                stat = candidate.stat()
+                inventory[str(candidate)] = (stat.st_size, stat.st_mtime_ns)
+    return inventory
+
+
+def validate_export_dataset(result: dict, expected_snapshot_id: str | None) -> tuple[str, str | None]:
+    required = {"snapshotId", "snapshotAt", "columns", "rows", "rowCount", "nextCursor"}
+    if set(result) != required:
+        raise SystemExit("export Action 未返回标准分页数据集")
+    snapshot_id = result.get("snapshotId")
+    if not isinstance(snapshot_id, str) or not snapshot_id:
+        raise SystemExit("export Action 的 snapshotId 无效")
+    if expected_snapshot_id is not None and snapshot_id != expected_snapshot_id:
+        raise SystemExit("export Action 分页过程中更换了 snapshotId")
+    if not isinstance(result.get("snapshotAt"), str) or not result["snapshotAt"]:
+        raise SystemExit("export Action 的 snapshotAt 无效")
+    if not isinstance(result.get("columns"), list) or not all(
+        isinstance(column, dict)
+        and isinstance(column.get("key"), str)
+        and column["key"]
+        and isinstance(column.get("label"), str)
+        and column["label"]
+        for column in result["columns"]
+    ):
+        raise SystemExit("export Action 的 columns 无效")
+    if not isinstance(result.get("rows"), list) or not all(
+        isinstance(row, dict)
+        and all(value is None or isinstance(value, (str, int, float, bool)) for value in row.values())
+        for row in result["rows"]
+    ):
+        raise SystemExit("export Action 的 rows 必须是扁平标量记录")
+    if isinstance(result.get("rowCount"), bool) or not isinstance(result.get("rowCount"), int):
+        raise SystemExit("export Action 的 rowCount 无效")
+    next_cursor = result.get("nextCursor")
+    if next_cursor is not None and (not isinstance(next_cursor, str) or len(next_cursor) < 20):
+        raise SystemExit("export Action 的 nextCursor 必须是不透明游标")
+    return snapshot_id, next_cursor
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="验收 v2.5 Manifest 与页面感知只读 AI Action")
     parser.add_argument("--base-url", required=True)
     parser.add_argument("--module-key", required=True)
     parser.add_argument("--page-key", required=True)
     parser.add_argument("--query-action", required=True)
+    parser.add_argument("--export-action", help="可选：验收标准分页导出 Action")
+    parser.add_argument("--export-page-limit", type=int, default=100)
+    parser.add_argument(
+        "--persistent-path",
+        action="append",
+        default=[],
+        type=Path,
+        help="可重复：导出前后必须完全不变的业务 ECS 持久目录或文件",
+    )
     parser.add_argument("--app-env-file", type=Path, help="Runtime 管理的应用凭证文件；默认按域名推断")
     parser.add_argument("--organization-id-env", default="ZHUOJIAN_ORGANIZATION_ID")
     args = parser.parse_args()
@@ -107,6 +166,20 @@ def main() -> int:
         raise SystemExit("Manifest 中找不到匹配的 module/page/query Action")
     if action.get("operation") != "query" or action.get("requiresConfirmation"):
         raise SystemExit("验收只执行无需确认的 query Action")
+
+    export_action = None
+    if args.export_action:
+        export_action = next(
+            (item for item in (module or {}).get("actions", []) if item.get("actionKey") == args.export_action),
+            None,
+        )
+        if (
+            not export_action
+            or export_action.get("operation") != "export"
+            or export_action.get("requiresConfirmation")
+            or args.export_action not in page.get("actionKeys", [])
+        ):
+            raise SystemExit("Manifest 中找不到匹配的无确认 export Action")
 
     # v2.5 must not accept a module-self-signed legacy SSO ticket.
     legacy_status, _ = json_request(
@@ -163,6 +236,62 @@ def main() -> int:
     )
     if status != 200:
         raise SystemExit(f"页面感知 query Action 失败：HTTP {status}，{result.get('detail', '')}")
+
+    export_summary = "not_requested"
+    if export_action is not None:
+        before_files = persistent_file_inventory(args.persistent_path)
+        snapshot_id: str | None = None
+        cursor: str | None = None
+        page_count = 0
+        seen_cursors: set[str] = set()
+        while True:
+            page_count += 1
+            if page_count > args.export_page_limit:
+                raise SystemExit("export Action 分页超过验收上限")
+            export_request_id = f"acceptance-export-{uuid4().hex}"
+            export_claims = {
+                **action_claims,
+                "actionKey": args.export_action,
+                "operation": "export",
+                "permissions": ["view", "export"],
+                "requestId": export_request_id,
+                "jti": uuid4().hex,
+                "iat": int(time.time()),
+                "exp": int(time.time()) + 60,
+            }
+            export_params = {"limit": min(100, max(1, args.export_page_limit))}
+            if cursor is None:
+                export_params["filters"] = {}
+            else:
+                export_params["cursor"] = cursor
+            export_body = {
+                "requestId": export_request_id,
+                "moduleKey": args.module_key,
+                "pageKey": args.page_key,
+                "operation": "export",
+                "expectedVersion": None,
+                "params": export_params,
+            }
+            export_status, export_result = json_request(
+                urljoin(base, f"api/integration/actions/{quote(args.export_action, safe='')}"),
+                token=jwt(credentials["action_signing_secret"], export_claims),
+                method="POST",
+                body=export_body,
+            )
+            if export_status != 200:
+                raise SystemExit(
+                    f"分页 export Action 失败：HTTP {export_status}，{export_result.get('detail', '')}"
+                )
+            snapshot_id, cursor = validate_export_dataset(export_result, snapshot_id)
+            if cursor is None:
+                break
+            if cursor in seen_cursors:
+                raise SystemExit("export Action 重复返回同一个游标")
+            seen_cursors.add(cursor)
+        if persistent_file_inventory(args.persistent_path) != before_files:
+            raise SystemExit("export Action 在业务 ECS 持久目录中创建或修改了文件")
+        export_summary = f"standard_dataset_verified:{page_count}_pages"
+
     print(json.dumps({
         "status": "pre_registration_only",
         "applicationSlug": manifest["applicationSlug"],
@@ -172,6 +301,10 @@ def main() -> int:
         "legacySelfSignedSso": "rejected",
         "realSso": "pending_admin_acceptance",
         "query": "technical_path_executed_with_local_test_signature",
+        "export": export_summary,
+        "subsystem_contract_pass": True,
+        "saas_format_capability_pass": "not_run",
+        "saas_artifact_e2e_pass": "not_run",
     }, ensure_ascii=False))
     print("技术预检未输出凭证、未执行写操作，也不代表真实员工 SSO 已通过。")
     return 0

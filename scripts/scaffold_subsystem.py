@@ -153,7 +153,10 @@ def main() -> int:
                 "label": {"type": "string", "description": "字段显示名"},
                 "type": {"type": "string", "enum": ["string", "number", "boolean", "date", "datetime"], "description": "字段数据类型"},
             }}},
-            "rows": {"type": "array", "description": "当前页权限过滤后的业务记录", "items": {"type": "object"}},
+            "rows": {"type": "array", "description": "当前页权限过滤后的业务记录", "items": {
+                "type": "object",
+                "additionalProperties": {"type": ["string", "number", "boolean", "null"]},
+            }},
             "rowCount": {"type": "integer", "minimum": 0, "description": "当前权限和筛选条件下的总记录数"},
             "nextCursor": {"type": ["string", "null"], "description": "下一页不透明游标；末页为空"},
         }},

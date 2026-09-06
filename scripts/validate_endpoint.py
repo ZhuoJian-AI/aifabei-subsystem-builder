@@ -166,6 +166,22 @@ def validate_export_schema(action: dict, label: str) -> None:
     rows_items = properties["rows"].get("items")
     if not isinstance(rows_items, dict) or rows_items.get("type") != "object":
         raise SystemExit(f"{label}.resultSchema.properties.rows.items 必须为 object。")
+    row_properties = rows_items.get("properties")
+    row_additional = rows_items.get("additionalProperties")
+    scalar_types = {"string", "number", "integer", "boolean", "null"}
+    if isinstance(row_properties, dict) and row_properties:
+        if row_additional is not False or set(rows_items.get("required") or []) != set(row_properties):
+            raise SystemExit(f"{label}.resultSchema.rows 必须封闭并要求全部已声明业务字段。")
+        row_schemas = row_properties.values()
+    elif isinstance(row_additional, dict):
+        row_schemas = [row_additional]
+    else:
+        raise SystemExit(f"{label}.resultSchema.rows 必须使用受控标量字段白名单。")
+    for row_schema in row_schemas:
+        row_type = row_schema.get("type") if isinstance(row_schema, dict) else None
+        declared_types = set(row_type) if isinstance(row_type, list) else {row_type}
+        if not declared_types or not declared_types.issubset(scalar_types):
+            raise SystemExit(f"{label}.resultSchema.rows 只能声明字符串、数值、布尔或空值字段。")
     next_cursor_schema = properties.get("nextCursor", {})
     next_cursor_type = next_cursor_schema.get("type")
     any_of_types = {
