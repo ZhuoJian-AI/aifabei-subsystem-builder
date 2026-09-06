@@ -9,7 +9,7 @@
 - 已有系统已经使用 OSS、S3 或其他稳定对象存储时保留现状，不得为了套用默认值迁回本地磁盘。
 - `/etc/zhuojian/runtime.json` 只提供尚未初始化系统的默认模式；系统第一次 `ensure-app` 后，实际模式必须记录并冻结在 `/srv/zhuojian/deployments/<applicationSlug>/release.json`。后续默认值变化不能改写已有 release，也不得在 OSS 故障、本地目录故障或磁盘不足时静默切换。
 
-OSS 只保存附件、导出物和生成文件，不承载数据库、Docker 卷、Git 仓库或高频随机写数据。无论哪种模式，数据库、Docker、本地 Git、构建缓存和临时处理仍需要磁盘空间。
+本规范的 OSS 只保存子系统自己的业务附件和业务记录关联文件，不承载 SaaS AI 产物、数据库、Docker 卷、Git 仓库或高频随机写数据。SaaS AI 生成的 Word、Excel、PPT、PDF、文本、图片和压缩包统一写入当前员工获权的 SaaS 工作空间，默认个人空间；子系统只提供权限过滤后的业务数据。无论哪种模式，数据库、Docker、本地 Git、构建缓存和临时处理仍需要磁盘空间。
 
 ## 从第一天就遵守的可迁移契约
 

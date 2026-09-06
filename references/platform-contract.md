@@ -56,13 +56,30 @@ ECS 管理员只需在 Runtime 初始化时建立通配域名、HTTPS `443` 和 
 | 工具显示名 | 应用名、模块名和 Action `name` | 平台可规范化为模型供应商允许的函数名 |
 | 工具说明 | `description` | 当前 SaaS 直接使用 `description`生成基础工具；`aiTool` 作为模块侧增强说明保留，平台尚未消费时不影响接入 |
 | 模型可填写参数 | `inputSchema` | 仅业务参数；字段说明强烈推荐 |
-| 返回值说明 | `resultSchema` | 描述模块返回值，供模块验收和后续平台增强使用；当前 SaaS 动态工具不依赖它做返回值校验 |
+| 返回值说明 | `resultSchema` | 描述模块真实返回值；SaaS 在把结果交给模型或文件执行器前必须按此 Schema 校验 |
 | 权限与风险 | 页面 `actionKeys`、`aiEnabled`、`requiresConfirmation`、平台授权 | 不进入模型可改参数 |
 | HTTP 封装 | 平台登记目录 | URL、JWT、`requestId/moduleKey/pageKey/operation` 由平台填写 |
 
 `inputSchema` 描述 Action 请求体中的 `params`，不是整个 HTTP 请求。模型只生成业务参数；平台生成 `requestId`，从登记目录确定应用、模块、页面、Action 和操作类型。AI 可执行的 `create/update/delete/approve` 必须列出真实业务 `properties`、必填的目标或业务字段，并设置 `additionalProperties=false`，禁止使用空对象 Schema 让模型猜参数。`update/delete/approve` 所需 `expectedVersion` 必须来自最近一次获授权查询或 Bridge 页面上下文；没有可信版本时先查询或要求用户刷新，禁止让模型猜测版本号。
 
 本 Skill 对 v2.5 Action 的最小构建要求是“描述 + 真实接口能力”：每个 Action 提供非空 `description`，以及 `actionKey/operation/inputSchema/resultSchema/aiEnabled/requiresConfirmation`；其中 `inputSchema` 是根类型为 `object` 的 JSON Schema，`resultSchema` 是 JSON Schema 对象。查询应支持必要筛选和 `limit`，默认只返回足够完成任务的数据，每条可修改记录返回 `dataVersion`。删除和审批必须确认，确认内容必须显示具体目标与参数，不能让用户确认一个空目标。这样平台不需要管理员逐条写说明，就能把已授权 Action 生成可靠的基础 AI 工具。
+
+### 导出 Action 的统一数据集
+
+`operation=export` 只返回权限过滤后的有界分页数据，不在业务 ECS 生成文件、数据库备份或服务器路径。返回 Schema 必须封闭并精确包含：
+
+```text
+snapshotId   # 同一次导出所有分页保持不变
+snapshotAt   # ISO 8601 快照时间
+columns[]    # key / label / type
+rows[]       # 当前页记录，只含 columns 声明的字段
+rowCount     # 当前权限与筛选条件下的总记录数
+nextCursor   # 下一页不透明游标；末页为 null
+```
+
+首次调用由模型填写业务筛选条件，`limit` 由平台和子系统共同限制；后续调用只携带原筛选、`snapshotId` 和 `nextCursor`。游标必须短时有效，并绑定组织、员工、应用、Action、权限范围及快照，不能把页码、SQL、文件路径或权限范围明文交给模型。SaaS 的可信执行器负责连续读取分页并生成 Excel、Word、PPT、PDF 或文本产物，模型不得复述或拼接大批量行。权限中途被撤回、Schema 不匹配、游标失效或快照变化时整次生成失败，且不得交付半成品。
+
+`artifact` 只能由 SaaS 工作空间文件服务成功提交后产生，必须带稳定 `fileId/versionId/workspaceId/canonicalPath`、文件大小、SHA-256 及应用/模块/页面/Action/请求/快照来源。模型正文、Action 文本和服务器路径都不能推断成文件。用户要求生成或导出文件时，没有成功文件工具结果和有效文件身份就必须明确失败，不能用 Markdown 表格冒充交付。
 
 整个 `aiTool` 都是可选的推荐增强项。脚手架默认生成，缺少时本 Skill 验收器给出警告，但不能仅因缺少这些字段阻断登记；当前 SaaS 可忽略它：
 

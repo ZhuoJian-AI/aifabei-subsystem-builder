@@ -12,18 +12,52 @@ assert SPEC.loader is not None
 SPEC.loader.exec_module(MODULE)
 
 
-def action(operation: str, *, schema: dict, confirmation: bool = False) -> dict:
+def action(operation: str, *, schema: dict, confirmation: bool = False, result_schema: dict | None = None) -> dict:
     return {
         "description": "执行明确的业务操作并返回结果。",
         "operation": operation,
         "aiEnabled": True,
         "requiresConfirmation": confirmation,
         "inputSchema": schema,
-        "resultSchema": {"type": "object"},
+        "resultSchema": result_schema or {"type": "object"},
     }
 
 
 class ActionContractValidationTests(unittest.TestCase):
+    @staticmethod
+    def export_input() -> dict:
+        return {
+            "type": "object", "additionalProperties": False,
+            "properties": {
+                "limit": {"type": "integer", "maximum": 500, "description": "单页数量"},
+                "snapshotId": {"type": "string", "description": "快照标识"},
+                "nextCursor": {"type": "string", "description": "下一页游标"},
+            },
+        }
+
+    @staticmethod
+    def export_result() -> dict:
+        properties = {
+            "snapshotId": {"type": "string", "description": "快照标识"},
+            "snapshotAt": {"type": "string", "format": "date-time", "description": "快照时间"},
+            "columns": {"type": "array", "description": "列", "items": {
+                "type": "object", "additionalProperties": False,
+                "required": ["key", "label", "type"],
+                "properties": {
+                    "key": {"type": "string", "description": "字段键"},
+                    "label": {"type": "string", "description": "显示名"},
+                    "type": {"type": "string", "enum": ["string", "number"], "description": "类型"},
+                },
+            }},
+            "rows": {"type": "array", "description": "行", "items": {"type": "object"}},
+            "rowCount": {"type": "integer", "description": "总数"},
+            "nextCursor": {"type": ["string", "null"], "description": "游标"},
+        }
+        return {
+            "type": "object", "additionalProperties": False,
+            "required": list(properties), "properties": properties,
+        }
+
     def test_ai_mutation_rejects_empty_schema(self) -> None:
         with self.assertRaisesRegex(SystemExit, "真实业务字段"):
             MODULE.validate_action_contract(
@@ -70,6 +104,29 @@ class ActionContractValidationTests(unittest.TestCase):
                 },
             ),
             "action",
+        )
+
+    def test_export_requires_standard_dataset(self) -> None:
+        with self.assertRaisesRegex(SystemExit, "标准分页数据集"):
+            MODULE.validate_action_contract(
+                action("export", schema=self.export_input(), result_schema={"type": "object"}),
+                "action",
+            )
+
+    def test_export_rejects_nested_server_path(self) -> None:
+        result = self.export_result()
+        result["properties"]["rows"]["items"] = {
+            "type": "object",
+            "properties": {"backupPath": {"type": "string", "description": "备份位置"}},
+        }
+        with self.assertRaisesRegex(SystemExit, "服务器路径"):
+            MODULE.validate_action_contract(
+                action("export", schema=self.export_input(), result_schema=result), "action",
+            )
+
+    def test_standard_export_dataset_passes(self) -> None:
+        MODULE.validate_action_contract(
+            action("export", schema=self.export_input(), result_schema=self.export_result()), "action",
         )
 
 

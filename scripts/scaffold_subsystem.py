@@ -107,8 +107,11 @@ def main() -> int:
             "id": {"type": "string", "description": f"需要审批的{args.module_name}记录标识"},
             "comment": {"type": "string", "description": "审批意见，没有意见时可以省略"},
         }},
-        "export": {"type": "object", "required": ["id"], "properties": {
-            "id": {"type": "string", "description": f"需要导出的{args.module_name}记录标识"},
+        "export": {"type": "object", "additionalProperties": False, "properties": {
+            "filters": {"type": "object", "description": f"用于筛选{args.module_name}记录的业务条件"},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 500, "description": "单页最大记录数"},
+            "snapshotId": {"type": "string", "description": "首轮返回的快照标识，首次调用省略"},
+            "nextCursor": {"type": "string", "description": "上一页返回的不透明游标，首次调用省略"},
         }},
     }
     example_params = {
@@ -117,7 +120,7 @@ def main() -> int:
         "update": {"id": "record-id", "changes": {"status": "已更新"}},
         "delete": {"id": "record-id"},
         "approve": {"id": "record-id", "comment": "同意"},
-        "export": {"id": "record-id"},
+        "export": {"filters": {"status": "待处理"}, "limit": 200},
     }
     result_schemas = {
         "query": {"type": "object", "description": f"查询{args.module_name}后的结构化业务结果", "required": ["items"], "properties": {
@@ -142,8 +145,17 @@ def main() -> int:
             "version": {"type": "integer", "description": "审批后的记录版本号"},
             "status": {"type": "string", "description": "审批后的业务状态"},
         }},
-        "export": {"type": "object", "description": f"导出{args.module_name}后的结构化业务结果", "required": ["record"], "properties": {
-            "record": {"type": "object", "description": "可供平台生成或下载文件的导出数据"},
+        "export": {"type": "object", "additionalProperties": False, "description": f"导出{args.module_name}的标准分页数据集", "required": ["snapshotId", "snapshotAt", "columns", "rows", "rowCount", "nextCursor"], "properties": {
+            "snapshotId": {"type": "string", "description": "绑定本次权限范围和筛选条件的快照标识"},
+            "snapshotAt": {"type": "string", "format": "date-time", "description": "快照生成时间"},
+            "columns": {"type": "array", "description": "导出字段定义", "items": {"type": "object", "additionalProperties": False, "required": ["key", "label", "type"], "properties": {
+                "key": {"type": "string", "description": "稳定字段键"},
+                "label": {"type": "string", "description": "字段显示名"},
+                "type": {"type": "string", "enum": ["string", "number", "boolean", "date", "datetime"], "description": "字段数据类型"},
+            }}},
+            "rows": {"type": "array", "description": "当前页权限过滤后的业务记录", "items": {"type": "object"}},
+            "rowCount": {"type": "integer", "minimum": 0, "description": "当前权限和筛选条件下的总记录数"},
+            "nextCursor": {"type": ["string", "null"], "description": "下一页不透明游标；末页为空"},
         }},
     }
     action_rows = []

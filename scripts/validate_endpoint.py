@@ -94,6 +94,91 @@ def validate_schema(schema: dict, label: str, *, require_object_root: bool) -> N
         walk_property(field_schema, f"{label}.properties.{field_name}")
 
 
+EXPORT_RESULT_FIELDS = {
+    "snapshotId", "snapshotAt", "columns", "rows", "rowCount", "nextCursor",
+}
+FORBIDDEN_EXPORT_FIELD_FRAGMENTS = {
+    "backuppath", "serverpath", "filesystempath", "localpath", "databasepath", "contentref",
+}
+
+
+def validate_export_schema(action: dict, label: str) -> None:
+    input_schema = action["inputSchema"]
+    input_properties = input_schema.get("properties") or {}
+    if input_schema.get("type") != "object" or input_schema.get("additionalProperties") is not False:
+        raise SystemExit(f"{label}.inputSchema 必须是封闭对象。")
+    limit_schema = input_properties.get("limit")
+    if not isinstance(limit_schema, dict) or limit_schema.get("type") != "integer":
+        raise SystemExit(f"{label}.inputSchema 必须声明整数 limit。")
+    if not isinstance(limit_schema.get("maximum"), int) or limit_schema["maximum"] > 1000:
+        raise SystemExit(f"{label}.inputSchema.limit.maximum 必须是不超过 1000 的整数。")
+    for key in ("snapshotId", "nextCursor"):
+        schema = input_properties.get(key)
+        if not isinstance(schema, dict) or schema.get("type") != "string":
+            raise SystemExit(f"{label}.inputSchema 必须声明字符串 {key}。")
+
+    result_schema = action["resultSchema"]
+    properties = result_schema.get("properties")
+    required = set(result_schema.get("required") or [])
+    if (
+        result_schema.get("type") != "object"
+        or result_schema.get("additionalProperties") is not False
+        or not isinstance(properties, dict)
+        or set(properties) != EXPORT_RESULT_FIELDS
+        or required != EXPORT_RESULT_FIELDS
+    ):
+        raise SystemExit(f"{label}.resultSchema 必须使用封闭的标准分页数据集字段。")
+    expected_types = {
+        "snapshotId": "string", "snapshotAt": "string", "columns": "array",
+        "rows": "array", "rowCount": "integer",
+    }
+    for key, expected in expected_types.items():
+        if not isinstance(properties.get(key), dict) or properties[key].get("type") != expected:
+            raise SystemExit(f"{label}.resultSchema.properties.{key}.type 必须为 {expected}。")
+    if properties["snapshotAt"].get("format") != "date-time":
+        raise SystemExit(f"{label}.resultSchema.properties.snapshotAt 必须声明 date-time 格式。")
+    columns_items = properties["columns"].get("items")
+    if not isinstance(columns_items, dict) or (
+        columns_items.get("type") != "object"
+        or columns_items.get("additionalProperties") is not False
+        or set(columns_items.get("required") or []) != {"key", "label", "type"}
+        or set((columns_items.get("properties") or {})) != {"key", "label", "type"}
+    ):
+        raise SystemExit(f"{label}.resultSchema.properties.columns 必须声明封闭的 key/label/type 列定义。")
+    for key in ("key", "label"):
+        if (columns_items["properties"].get(key) or {}).get("type") != "string":
+            raise SystemExit(f"{label}.resultSchema.columns.{key} 必须为 string。")
+    column_type = columns_items["properties"].get("type") or {}
+    if column_type.get("type") != "string" or not set(column_type.get("enum") or []):
+        raise SystemExit(f"{label}.resultSchema.columns.type 必须声明非空字符串枚举。")
+    rows_items = properties["rows"].get("items")
+    if not isinstance(rows_items, dict) or rows_items.get("type") != "object":
+        raise SystemExit(f"{label}.resultSchema.properties.rows.items 必须为 object。")
+    next_cursor_schema = properties.get("nextCursor", {})
+    next_cursor_type = next_cursor_schema.get("type")
+    any_of_types = {
+        item.get("type") for item in next_cursor_schema.get("anyOf", []) if isinstance(item, dict)
+    }
+    if not (
+        next_cursor_type == ["string", "null"]
+        or next_cursor_type == ["null", "string"]
+        or any_of_types == {"string", "null"}
+    ):
+        raise SystemExit(f"{label}.resultSchema.properties.nextCursor 必须允许 string 或 null。")
+
+    def reject_path_fields(schema: object) -> None:
+        if not isinstance(schema, dict):
+            return
+        for field_name, child in (schema.get("properties") or {}).items():
+            normalized = str(field_name).replace("_", "").casefold()
+            if any(fragment in normalized for fragment in FORBIDDEN_EXPORT_FIELD_FRAGMENTS):
+                raise SystemExit(f"{label}.resultSchema 不得声明服务器路径或备份字段。")
+            reject_path_fields(child)
+        reject_path_fields(schema.get("items"))
+
+    reject_path_fields(result_schema)
+
+
 def validate_action_contract(action: dict, label: str) -> None:
     description = require_text(action.get("description"), f"{label}.description")
     if description.lower() in {"todo", "tbd", "placeholder", "execute action"} or description in {"执行操作", "处理数据"}:
@@ -147,6 +232,8 @@ def validate_action_contract(action: dict, label: str) -> None:
     validate_schema(action["resultSchema"], f"{label}.resultSchema", require_object_root=False)
 
     operation = action.get("operation")
+    if operation == "export":
+        validate_export_schema(action, label)
     if action.get("aiEnabled") and operation in {"create", "update", "delete", "approve"}:
         properties = input_schema.get("properties")
         required = input_schema.get("required")
