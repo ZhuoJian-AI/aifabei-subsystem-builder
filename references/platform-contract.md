@@ -245,6 +245,8 @@ Action JWT 使用该系统专属 `zjac_` 密钥和 `typ=zhuojian-action`，至�
 }
 ```
 
+`requestId` 固定为平台生成的 8–128 位安全字符标识，首位为字母或数字，其余只允许字母、数字、点、下划线、冒号和短横线。子系统模板、Schema 与平台生成器必须使用同一限制，不能因拼接 Task、运行和工具名称而产生超长请求。
+
 `update`、`delete` 和 `approve` 必须携带 `expectedVersion`，与当前实体版本不一致时返回 HTTP 409。模块按 `applicationSlug + requestId` 幂等保存结果，页面按钮和 Action HTTP 入口调用同一应用服务函数。
 
 ### 高风险确认

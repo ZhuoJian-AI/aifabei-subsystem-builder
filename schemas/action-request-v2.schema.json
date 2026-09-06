@@ -5,7 +5,12 @@
   "additionalProperties": false,
   "required": ["requestId", "moduleKey", "pageKey", "operation", "params"],
   "properties": {
-    "requestId": {"type": "string", "minLength": 8, "maxLength": 160},
+    "requestId": {
+      "type": "string",
+      "minLength": 8,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$"
+    },
     "moduleKey": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]*$"},
     "pageKey": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]*$"},
     "operation": {"enum": ["query", "create", "update", "delete", "export", "approve"]},
