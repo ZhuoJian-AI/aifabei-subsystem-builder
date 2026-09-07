@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 def test_skill_release_version_is_separate_from_contract_revision() -> None:
     metadata = load_skill_metadata(ROOT)
 
-    assert metadata["skillVersion"] == "1.0.5"
+    assert metadata["skillVersion"] == "1.0.6"
     assert metadata["defaultContractRevision"] == "2.5"
     assert metadata["supportedContractRevisions"] == ["2.4", "2.5"]
 
