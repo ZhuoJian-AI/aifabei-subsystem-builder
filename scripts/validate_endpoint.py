@@ -13,6 +13,7 @@ from urllib.parse import urlencode, urljoin, urlsplit
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
 from contract_versions import require_supported_contract_revision
+from manifest_semantics import validate_manifest_semantics
 from publish_subsystem import load_app_environment
 
 
@@ -339,6 +340,12 @@ def main() -> int:
         contract_revision = require_supported_contract_revision(manifest.get("contractRevision"))
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
+    semantic_failures = validate_manifest_semantics(
+        manifest,
+        require_semantics=contract_revision == "2.5",
+    )
+    if semantic_failures:
+        raise SystemExit("Manifest 业务语义与工具契约不合格：\n- " + "\n- ".join(semantic_failures))
     if contract_revision != token_kind:
         raise SystemExit(
             f"contractRevision={contract_revision} 与当前凭证类型不一致；"

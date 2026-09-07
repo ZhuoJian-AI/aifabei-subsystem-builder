@@ -44,13 +44,21 @@ def test_scaffold_defaults_to_the_canonical_alphabet_identity(tmp_path: Path):
     )
 
     manifest = json.loads((project / "subsystem.json").read_text(encoding="utf-8"))
-    page = (project / "static" / "index.html").read_text(encoding="utf-8")
+    page_html = (project / "static" / "index.html").read_text(encoding="utf-8")
     app = (project / "app.py").read_text(encoding="utf-8")
     assert manifest["enterprise"]["key"] == "alphabet"
     assert manifest["contractRevision"] == "2.5"
-    assert "enterprise_key:'alphabet'" in page
-    assert "data-zhuojian-embedded" in page
-    assert page.index("data-zhuojian-embedded") < page.index("<style>")
+    manifest_page = manifest["modules"][0]["pages"][0]
+    assert manifest_page["aiSemantics"]["defaultQueryActionKey"] == f"{manifest_page['pageKey'].rsplit('.', 1)[0]}.query"
+    assert manifest_page["aiSemantics"]["primaryEntities"]
+    assert all(
+        action["inputSchema"].get("additionalProperties") is False
+        and action["resultSchema"].get("additionalProperties") is False
+        for action in manifest["modules"][0]["actions"]
+    )
+    assert "enterprise_key:'alphabet'" in page_html
+    assert "data-zhuojian-embedded" in page_html
+    assert page_html.index("data-zhuojian-embedded") < page_html.index("<style>")
     assert "frame-ancestors 'self' " in app
 
 
