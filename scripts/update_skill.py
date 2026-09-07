@@ -133,6 +133,22 @@ def validate_version_metadata(payload: dict, *, expected_version: str | None = N
     return str(version)
 
 
+def validate_changelog(text: str, expected_version: str) -> None:
+    """Require a non-empty release-note section for the installed Skill version."""
+    heading = re.compile(
+        rf"(?m)^##[ \t]+\[?{re.escape(expected_version)}\]?"
+        r"(?:[ \t]+-[ \t]+\d{4}-\d{2}-\d{2})?[ \t]*$"
+    )
+    match = heading.search(text)
+    if match is None:
+        raise UpdateError(f"CHANGELOG.md 缺少 {expected_version} 的更新记录")
+    remainder = text[match.end():]
+    next_heading = re.search(r"(?m)^##[ \t]+", remainder)
+    section = remainder[:next_heading.start()] if next_heading else remainder
+    if re.search(r"(?m)^[ \t]*[-*][ \t]+\S", section) is None:
+        raise UpdateError(f"CHANGELOG.md 中 {expected_version} 的更新记录为空")
+
+
 def read_local_version(skill_dir: Path, *, bootstrap: bool) -> str | None:
     if not skill_dir.exists():
         if bootstrap:
@@ -225,6 +241,7 @@ def safe_extract(archive_path: Path, destination: Path) -> Path:
 def verify_candidate(candidate: Path, expected_version: str) -> None:
     required = (
         candidate / "SKILL.md",
+        candidate / "CHANGELOG.md",
         candidate / "skill-version.json",
         candidate / "scripts" / "update_skill.py",
     )
@@ -233,8 +250,13 @@ def verify_candidate(candidate: Path, expected_version: str) -> None:
     entry_text = required[0].read_text(encoding="utf-8")
     if not re.search(r"(?m)^name:\s*[\"']?aifabei-subsystem-builder[\"']?\s*$", entry_text):
         raise UpdateError("稳定版压缩包中的 Skill 名称不匹配")
-    metadata = read_json_bytes(required[1].read_bytes(), "压缩包 Skill 版本文件")
+    metadata = read_json_bytes(required[2].read_bytes(), "压缩包 Skill 版本文件")
     validate_version_metadata(metadata, expected_version=expected_version)
+    try:
+        changelog = required[1].read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise UpdateError("无法读取压缩包中的 CHANGELOG.md") from exc
+    validate_changelog(changelog, expected_version)
 
 
 def replace_skill_directory(skill_dir: Path, candidate: Path) -> None:

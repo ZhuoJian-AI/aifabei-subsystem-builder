@@ -7,7 +7,7 @@ description: "让 AI 用业务需求和服务器登录信息，在 Alphabet 企�
 
 对外名称和正式企业标识都使用 `Alphabet` / `alphabet`；Skill 名称中的 `aifabei` 只作历史兼容。
 
-每次调用本 Skill 时，同一轮先运行一次 `python <skill>/scripts/update_skill.py`。若输出 `SKILL_UPDATED`，立即重新读取新版 `SKILL.md` 和本次所需参考文件后再继续；其他结果直接使用本地版本，细节见 [Skill 稳定版更新](references/skill-updates.md)。
+每次调用本 Skill 时，同一轮先运行一次 `python <skill>/scripts/update_skill.py`。若输出 `SKILL_UPDATED`，先读取新版 `skill-version.json` 对应的 `CHANGELOG.md` 版本记录，再重新读取新版 `SKILL.md` 和本次所需参考文件后继续；其他结果直接使用本地版本，细节见 [Skill 稳定版更新](references/skill-updates.md)。
 
 业务负责人只需提供三样东西：想做什么、谁使用、服务器登录信息。不要让其准备阿里云、OSS、GitHub、模型供应商或平台令牌，也不要让其选择技术方案。密码只交给真实 SSH 密码提示，不写入命令、文件、Git、日志或回复。
 
