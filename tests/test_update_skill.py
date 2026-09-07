@@ -35,7 +35,15 @@ def write_skill(path: Path, version: str | None, marker: str) -> None:
         )
 
 
-def build_archive(tmp_path: Path, version: str, marker: str, *, traversal: bool = False) -> Path:
+def build_archive(
+    tmp_path: Path,
+    version: str,
+    marker: str,
+    *,
+    traversal: bool = False,
+    include_changelog: bool = True,
+    changelog_version: str | None = None,
+) -> Path:
     archive_path = tmp_path / f"release-{version}.zip"
     prefix = update_skill.SKILL_NAME
     with zipfile.ZipFile(archive_path, "w", zipfile.ZIP_DEFLATED) as archive:
@@ -45,6 +53,12 @@ def build_archive(tmp_path: Path, version: str, marker: str, *, traversal: bool 
         )
         archive.writestr(f"{prefix}/skill-version.json", json.dumps(version_payload(version)))
         archive.writestr(f"{prefix}/scripts/update_skill.py", "# updater\n")
+        if include_changelog:
+            release_version = changelog_version or version
+            archive.writestr(
+                f"{prefix}/CHANGELOG.md",
+                f"# 更新记录\n\n## {release_version} - 2026-09-07\n\n- test release\n",
+            )
         if traversal:
             archive.writestr(f"{prefix}/../outside.txt", "unsafe")
     return archive_path
@@ -107,6 +121,39 @@ def test_same_major_stable_release_is_installed(tmp_path: Path) -> None:
     assert result.status == "updated"
     assert result.available_version == "1.0.1"
     assert "new" in (skill_dir / "SKILL.md").read_text(encoding="utf-8")
+    assert "## 1.0.1" in (skill_dir / "CHANGELOG.md").read_text(encoding="utf-8")
+
+
+def test_release_without_changelog_is_rejected(tmp_path: Path) -> None:
+    skill_dir = tmp_path / update_skill.SKILL_NAME
+    write_skill(skill_dir, "1.0.0", "old")
+    archive = build_archive(tmp_path, "1.0.1", "new", include_changelog=False)
+    manifest = write_remote_manifest(tmp_path, "1.0.1", archive)
+
+    with pytest.raises(update_skill.UpdateError, match="缺少必要"):
+        update_skill.run_update(
+            skill_dir,
+            manifest_url=manifest.as_uri(),
+            allow_test_url=True,
+        )
+
+    assert "old" in (skill_dir / "SKILL.md").read_text(encoding="utf-8")
+
+
+def test_release_with_mismatched_changelog_is_rejected(tmp_path: Path) -> None:
+    skill_dir = tmp_path / update_skill.SKILL_NAME
+    write_skill(skill_dir, "1.0.0", "old")
+    archive = build_archive(tmp_path, "1.0.1", "new", changelog_version="1.0.2")
+    manifest = write_remote_manifest(tmp_path, "1.0.1", archive)
+
+    with pytest.raises(update_skill.UpdateError, match="缺少 1.0.1"):
+        update_skill.run_update(
+            skill_dir,
+            manifest_url=manifest.as_uri(),
+            allow_test_url=True,
+        )
+
+    assert "old" in (skill_dir / "SKILL.md").read_text(encoding="utf-8")
 
 
 def test_cross_major_release_only_reports_availability(tmp_path: Path) -> None:

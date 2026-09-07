@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from contract_versions import load_skill_metadata
+from update_skill import UpdateError, validate_changelog
 
 
 REPOSITORY = "ZhuoJian-AI/aifabei-subsystem-builder"
@@ -69,9 +70,18 @@ def main() -> int:
     tag = f"v{version}"
     source_commit = git(root, "rev-parse", "HEAD")
     files = tracked_files(root)
-    required = {Path("SKILL.md"), Path("skill-version.json"), Path("scripts/update_skill.py")}
+    required = {
+        Path("SKILL.md"),
+        Path("CHANGELOG.md"),
+        Path("skill-version.json"),
+        Path("scripts/update_skill.py"),
+    }
     if not required.issubset({path for path, _ in files}):
         raise SystemExit("发布内容缺少必要文件")
+    try:
+        validate_changelog((root / "CHANGELOG.md").read_text(encoding="utf-8"), version)
+    except (OSError, UnicodeDecodeError, UpdateError) as exc:
+        raise SystemExit(f"发布更新记录无效：{exc}") from exc
 
     output.mkdir(parents=True, exist_ok=True)
     archive_path = output / ARCHIVE_NAME

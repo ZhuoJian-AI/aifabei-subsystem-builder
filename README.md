@@ -60,9 +60,11 @@ py $updater --install-dir "$HOME/.codex/skills/aifabei-subsystem-builder"
 Remove-Item -LiteralPath $updater
 ```
 
-安装 `v1.0.0` 引导版后，每次调用根 Skill 会检查公开 GitHub Release 的同主版本稳定更新；不跟踪 `main`，不需要 GitHub 登录。断网或校验失败时保留本地版本继续工作，跨主版本只提示管理员。
+安装引导版后，每次调用根 Skill 会检查公开 GitHub Release 的同主版本稳定更新；不跟踪 `main`，不需要 GitHub 登录。更新成功后，AI 会先读取新版 `CHANGELOG.md` 中与当前 `skillVersion` 对应的记录，再按新版规则继续。断网或校验失败时保留本地版本继续工作，跨主版本只提示管理员。
 
 `skillVersion=1.x` 是 Skill 自身版本；业务系统 Manifest 的 `contractRevision=2.4/2.5` 是 SaaS 接入版本。自动更新 Skill 永远不会替现有系统升级接入契约。
+
+维护者发布稳定版时，需要同时更新 `skill-version.json` 和 `CHANGELOG.md`，测试通过并合并到 `main` 后再发布同版本 GitHub Release。只合并 `main` 不会触发用户自动更新。
 
 ---
 
