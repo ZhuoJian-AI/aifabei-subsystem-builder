@@ -75,6 +75,8 @@ def main() -> int:
         Path("CHANGELOG.md"),
         Path("skill-version.json"),
         Path("scripts/update_skill.py"),
+        Path("scripts/server_access_memory.py"),
+        Path("references/server-access-memory.md"),
     }
     if not required.issubset({path for path, _ in files}):
         raise SystemExit("发布内容缺少必要文件")
