@@ -15,6 +15,7 @@ ZHUOJIAN_ACTION_SIGNING_SECRET
 ZHUOJIAN_EVENT_SIGNING_SECRET
 /api/v1/subsystem-sso/exchange
 launch_nonce
+zhuojian:ready
 zhuojian:context
 if (window.parent !== window) document.documentElement.setAttribute("data-zhuojian-embedded", "true")
 window.parent.postMessage(message, "https://saas.example.com")
@@ -124,6 +125,35 @@ def test_validator_rejects_missing_native_embedded_mode(tmp_path: Path):
 
     assert result.returncode == 1
     assert "未实现 iframe 原生嵌入模式" in result.stdout
+
+
+def test_validator_rejects_missing_bridge_ready(tmp_path: Path):
+    project = write_valid_project(tmp_path)
+    source = (project / "app.py").read_text(encoding="utf-8")
+    (project / "app.py").write_text(
+        source.replace("zhuojian:ready", "missing-bridge-ready"),
+        encoding="utf-8",
+    )
+
+    result = run_validator(project)
+
+    assert result.returncode == 1
+    assert "zhuojian:ready Bridge 就绪消息" in result.stdout
+
+
+def test_validator_rejects_context_without_launch_binding(tmp_path: Path):
+    project = write_valid_project(tmp_path)
+    source = (project / "app.py").read_text(encoding="utf-8")
+    (project / "app.py").write_text(
+        source.replace("launch_nonce\nzhuojian:ready\nzhuojian:context", "zhuojian:ready\nzhuojian:context"),
+        encoding="utf-8",
+    )
+    (project / "sso.py").write_text("launch_nonce", encoding="utf-8")
+
+    result = run_validator(project)
+
+    assert result.returncode == 1
+    assert "zhuojian:context 未携带本次启动的 launch_nonce" in result.stdout
 
 
 def test_validator_rejects_nested_iframe_without_same_origin_ancestor(tmp_path: Path):

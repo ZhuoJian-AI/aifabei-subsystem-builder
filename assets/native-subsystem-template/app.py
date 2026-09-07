@@ -2092,8 +2092,10 @@ def ui_bootstrap(request: Request, moduleKey: str, pageKey: str):
     validate_live_session(session, moduleKey, pageKey)
     return {
         "applicationName": MANIFEST["applicationName"],
+        "applicationSlug": APP_SLUG,
         "moduleName": module["name"],
         "pageName": page["name"],
+        "launchNonce": session.get("launchNonce"),
     }
 
 
@@ -2855,6 +2857,7 @@ def validate_sso_exchange(
         "actionKeys": action_keys,
         "pageAccess": page_access,
         "authEpoch": claims["authEpoch"],
+        "launchNonce": launch_nonce,
     }
 
 

@@ -294,7 +294,16 @@ Action JWT 使用该系统专属 `zjac_` 密钥和 `typ=zhuojian-action`，至�
 
 ## 页面上下文和 AI 工具
 
-iframe 在模块、页面、实体、筛选或选中项变化后发送。发送方的 `targetOrigin` 必须来自已验证的 HTTPS 灼见来源，禁止使用 `"*"` 或用户可控查询参数。平台接收方还必须同时验证 `event.origin` 等于该应用登记来源、`event.source` 等于当前 iframe、`launch_nonce` 等于本次启动值，并校验消息类型、版本、应用、模块、页面和字段大小：
+iframe 完成 SSO 会话恢复后，先发送一次绑定 `application_slug + launch_nonce` 的 `zhuojian:ready`，并在模块、页面、实体、筛选或选中项变化后发送同样绑定本次启动 nonce 的 `zhuojian:context`。发送方的 `targetOrigin` 必须来自已验证的 HTTPS 灼见来源，禁止使用 `"*"` 或用户可控查询参数。平台接收方还必须同时验证 `event.origin` 等于该应用登记来源、`event.source` 等于当前 iframe、`launch_nonce` 等于本次启动值，并校验消息类型、版本、应用、模块、页面和字段大小。浏览器的 iframe `load` 事件可能来自错误页，不能单独作为应用可用的证据：
+
+```json
+{
+  "type": "zhuojian:ready",
+  "version": 1,
+  "application_slug": "sample-review",
+  "launch_nonce": "本次 SSO 启动 nonce"
+}
+```
 
 ```json
 {
@@ -302,6 +311,7 @@ iframe 在模块、页面、实体、筛选或选中项变化后发送。发送�
   "version": 1,
   "enterprise_key": "alphabet",
   "application_slug": "sample-review",
+  "launch_nonce": "本次 SSO 启动 nonce",
   "module_key": "sample_review",
   "page_key": "sample_review.list",
   "page_name": "评审列表",

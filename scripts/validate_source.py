@@ -166,6 +166,8 @@ def main() -> int:
         parser.error(f"目录不存在：{root}")
 
     context_found = False
+    bridge_ready_found = False
+    bridge_launch_binding_found = False
     embedded_mode_found = False
     nested_iframe_found = False
     unsafe_frame_ancestor_files: set[Path] = set()
@@ -176,6 +178,10 @@ def main() -> int:
     for path in source_files(root):
         text = path.read_text(encoding="utf-8", errors="replace")
         context_found = context_found or "zhuojian:context" in text
+        bridge_ready_found = bridge_ready_found or "zhuojian:ready" in text
+        bridge_launch_binding_found = bridge_launch_binding_found or (
+            "zhuojian:context" in text and "launch_nonce" in text
+        )
         embedded_mode_found = embedded_mode_found or EMBEDDED_MODE_MARKER in text
         nested_iframe_found = nested_iframe_found or bool(NESTED_IFRAME.search(text))
         if any(
@@ -228,6 +234,10 @@ def main() -> int:
 
     if not context_found:
         failures.append("未找到 zhuojian:context 页面上下文 Bridge")
+    if not bridge_ready_found:
+        failures.append("未找到绑定本次 SSO 启动的 zhuojian:ready Bridge 就绪消息")
+    if not bridge_launch_binding_found:
+        failures.append("zhuojian:context 未携带本次启动的 launch_nonce")
     if not embedded_mode_found:
         failures.append(
             "未实现 iframe 原生嵌入模式：页面需要在嵌入时隐藏自身系统级导航"

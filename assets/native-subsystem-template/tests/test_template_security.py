@@ -67,6 +67,17 @@ class TemplateSecurityTests(unittest.TestCase):
         self.assertIn("lifetime > 120", sso_source)
         self.assertIn("request.session.clear()", sso_source)
 
+    def test_iframe_bridge_is_bound_to_the_current_launch(self):
+        source = (PROJECT_ROOT / "app.py").read_text(encoding="utf-8")
+        html = (PROJECT_ROOT / "static" / "index.html").read_text(encoding="utf-8")
+
+        self.assertIn('"launchNonce": launch_nonce', source)
+        self.assertIn('"launchNonce": session.get("launchNonce")', source)
+        self.assertIn("type:'zhuojian:ready'", html)
+        self.assertIn("type:'zhuojian:context'", html)
+        self.assertIn("application_slug:applicationSlug", html)
+        self.assertIn("launch_nonce:launchNonce", html)
+
     def test_storage_recovery_never_blocks_application_startup(self):
         source = (PROJECT_ROOT / "app.py").read_text(encoding="utf-8")
         startup = re.search(
