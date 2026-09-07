@@ -326,6 +326,37 @@ iframe 完成 SSO 会话恢复后，先发送一次绑定 `application_slug + la
 
 平台提供给 AI 的工具集合必须是：用户有效授权 ∩ 企业/应用 ∩ `moduleKey` ∩ `pageKey` ∩ 页面 `actionKeys` ∩ Manifest `aiEnabled` ∩ 管理员启用 Action。Bridge 不包含 Token、Cookie、密码、内部路径或整表数据。
 
+业务助手只有在可信 `tool_result` 证明 `create/update/delete/approve` 已真实完成后，才向当前 iframe 发送局部刷新；普通问答、查询和文件导出不刷新。请求和结果都绑定应用、模块、页面、本次启动 nonce 和请求号：
+
+```json
+{
+  "type": "zhuojian:refresh",
+  "version": 1,
+  "application_slug": "sample-review",
+  "launch_nonce": "本次 SSO 启动 nonce",
+  "module_key": "sample_review",
+  "page_key": "sample_review.list",
+  "request_id": "uuid"
+}
+```
+
+```json
+{
+  "type": "zhuojian:refresh-result",
+  "version": 1,
+  "application_slug": "sample-review",
+  "launch_nonce": "本次 SSO 启动 nonce",
+  "module_key": "sample_review",
+  "page_key": "sample_review.list",
+  "request_id": "同一个 uuid",
+  "status": "completed | deferred | failed",
+  "data_version": "optional",
+  "error": "失败时的简短中文原因"
+}
+```
+
+子系统必须复用当前模块的数据加载函数，不得调用 `location.reload()` 或重建自身页面，不弹“已刷新”提示；并发请求合并为一次加载。存在未保存编辑时返回 `deferred` 并保留用户输入。SaaS 对来源、当前 iframe、应用、模块、页面、nonce 和请求号逐项校验；旧子系统不响应或超时时，平台只可在隐藏 iframe 完成新 SSO 和有效 `ready/context` 后原子替换，失败时继续保留旧页面。刷新期间业务助手抽屉、对话、滚动位置和输入内容必须保持挂载。
+
 业务小助手不得混入其他应用、旧版 Skill、旧域名或长期记忆工具。用户询问当前、实时、数量、进度、异常或待办时，本轮必须有当前页面查询 Action 成功返回；调用失败就明确说明暂时无法确认，不得拿页面缓存、历史回答或记忆冒充实时结果。真实员工端验收还要核对本轮工具明细，出现越权工具或失败工具即不通过。
 
 用户能在页面执行某个 Action，不代表 AI 自动拥有它。只有上述交集仍包含该 Action，且平台 AI 策略允许时，平台才可向模型暴露该工具并为本次调用签发 Action JWT。模块收到请求后必须再次验证 JWT 与 URL 中 `actionKey`、请求体中的模块/页面/操作完全一致；任何不一致都拒绝，不能因为请求来自灼见域名或通过 Nginx 就跳过鉴权。

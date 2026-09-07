@@ -17,6 +17,9 @@ ZHUOJIAN_EVENT_SIGNING_SECRET
 launch_nonce
 zhuojian:ready
 zhuojian:context
+zhuojian:refresh
+zhuojian:refresh-result
+module_key page_key request_id event.origin event.source deferred
 if (window.parent !== window) document.documentElement.setAttribute("data-zhuojian-embedded", "true")
 window.parent.postMessage(message, "https://saas.example.com")
 """
@@ -154,6 +157,41 @@ def test_validator_rejects_context_without_launch_binding(tmp_path: Path):
 
     assert result.returncode == 1
     assert "zhuojian:context 未携带本次启动的 launch_nonce" in result.stdout
+
+
+@pytest.mark.parametrize(
+    ("marker", "expected_message"),
+    [
+        ("zhuojian:refresh\n", "zhuojian:refresh 当前模块静默刷新处理"),
+        ("zhuojian:refresh-result\n", "zhuojian:refresh-result 静默刷新结果"),
+        ("event.origin", "静默刷新未同时校验来源"),
+        ("deferred", "存在未保存编辑时返回 deferred"),
+    ],
+)
+def test_validator_rejects_incomplete_silent_refresh_contract(
+    tmp_path: Path,
+    marker: str,
+    expected_message: str,
+):
+    project = write_valid_project(tmp_path)
+    source = (project / "app.py").read_text(encoding="utf-8")
+    (project / "app.py").write_text(source.replace(marker, ""), encoding="utf-8")
+
+    result = run_validator(project)
+
+    assert result.returncode == 1
+    assert expected_message in result.stdout
+
+
+def test_validator_rejects_page_reload_in_refresh_handler(tmp_path: Path):
+    project = write_valid_project(tmp_path)
+    with (project / "app.py").open("a", encoding="utf-8") as source:
+        source.write("\nzhuojian:refresh\nwindow.location.reload()\n")
+
+    result = run_validator(project)
+
+    assert result.returncode == 1
+    assert "禁止调用 location.reload" in result.stdout
 
 
 def test_validator_rejects_nested_iframe_without_same_origin_ancestor(tmp_path: Path):

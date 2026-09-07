@@ -168,6 +168,11 @@ def main() -> int:
     context_found = False
     bridge_ready_found = False
     bridge_launch_binding_found = False
+    bridge_refresh_found = False
+    bridge_refresh_result_found = False
+    bridge_refresh_binding_found = False
+    bridge_refresh_deferred_found = False
+    bridge_refresh_reloads_page = False
     embedded_mode_found = False
     nested_iframe_found = False
     unsafe_frame_ancestor_files: set[Path] = set()
@@ -182,6 +187,21 @@ def main() -> int:
         bridge_launch_binding_found = bridge_launch_binding_found or (
             "zhuojian:context" in text and "launch_nonce" in text
         )
+        if re.search(r"zhuojian:refresh(?!-result)", text):
+            bridge_refresh_found = True
+            bridge_refresh_result_found = bridge_refresh_result_found or "zhuojian:refresh-result" in text
+            bridge_refresh_binding_found = bridge_refresh_binding_found or all(
+                marker in text
+                for marker in (
+                    "launch_nonce", "module_key", "page_key", "request_id",
+                    "event.origin", "event.source",
+                )
+            )
+            bridge_refresh_deferred_found = bridge_refresh_deferred_found or "deferred" in text
+            for match in re.finditer(r"zhuojian:refresh(?:-result)?", text):
+                region = text[max(0, match.start() - 4_000):match.end() + 8_000]
+                if re.search(r"(?:window\.)?location\.reload\s*\(", region):
+                    bridge_refresh_reloads_page = True
         embedded_mode_found = embedded_mode_found or EMBEDDED_MODE_MARKER in text
         nested_iframe_found = nested_iframe_found or bool(NESTED_IFRAME.search(text))
         if any(
@@ -238,6 +258,16 @@ def main() -> int:
         failures.append("未找到绑定本次 SSO 启动的 zhuojian:ready Bridge 就绪消息")
     if not bridge_launch_binding_found:
         failures.append("zhuojian:context 未携带本次启动的 launch_nonce")
+    if not bridge_refresh_found:
+        failures.append("未找到 zhuojian:refresh 当前模块静默刷新处理")
+    if not bridge_refresh_result_found:
+        failures.append("未找到 zhuojian:refresh-result 静默刷新结果")
+    if not bridge_refresh_binding_found:
+        failures.append("静默刷新未同时校验来源、当前窗口、模块、页面、请求号和 launch_nonce")
+    if not bridge_refresh_deferred_found:
+        failures.append("静默刷新未在存在未保存编辑时返回 deferred")
+    if bridge_refresh_reloads_page:
+        failures.append("zhuojian:refresh 禁止调用 location.reload()，必须只刷新当前模块数据")
     if not embedded_mode_found:
         failures.append(
             "未实现 iframe 原生嵌入模式：页面需要在嵌入时隐藏自身系统级导航"

@@ -75,6 +75,13 @@ class TemplateSecurityTests(unittest.TestCase):
         self.assertIn('"launchNonce": session.get("launchNonce")', source)
         self.assertIn("type:'zhuojian:ready'", html)
         self.assertIn("type:'zhuojian:context'", html)
+        self.assertIn("request.type!=='zhuojian:refresh'", html)
+        self.assertIn("type:'zhuojian:refresh-result'", html)
+        self.assertIn("event.source!==parent", html)
+        self.assertIn("event.origin!==bridgeOrigin()", html)
+        self.assertIn("request.launch_nonce!==launchNonce", html)
+        self.assertIn("status:'deferred'", html)
+        self.assertNotIn("location.reload", html)
         self.assertIn("application_slug:applicationSlug", html)
         self.assertIn("launch_nonce:launchNonce", html)
 
