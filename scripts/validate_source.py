@@ -7,6 +7,8 @@ import argparse
 import re
 from pathlib import Path
 
+from contract_versions import detect_project_contract_revision
+
 TEXT_SUFFIXES = {
     ".html", ".js", ".jsx", ".ts", ".tsx", ".vue", ".svelte", ".py",
     ".json", ".yaml", ".yml", ".toml", ".ini", ".cfg",
@@ -151,6 +153,11 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="校验灼见原生模块的前端 Bridge 安全约束")
     parser.add_argument("--path", required=True, help="模块项目根目录")
     parser.add_argument(
+        "--contract-revision",
+        choices=("2.4", "2.5"),
+        help="仅用于没有 subsystem.json 的既有项目；不得用它覆盖文件中的版本",
+    )
+    parser.add_argument(
         "--requires-file-storage",
         action="store_true",
         help="模块存在持久文件时启用；校验可迁移存储标记并拒绝 OSS AccessKey",
@@ -164,6 +171,15 @@ def main() -> int:
     root = Path(args.path).expanduser().resolve()
     if not root.is_dir():
         parser.error(f"目录不存在：{root}")
+    try:
+        contract_revision = detect_project_contract_revision(
+            root,
+            explicit_revision=args.contract_revision,
+        )
+    except ValueError as exc:
+        print("SOURCE VALIDATION FAILED")
+        print(f"- {exc}")
+        return 1
 
     context_found = False
     bridge_ready_found = False
@@ -247,51 +263,53 @@ def main() -> int:
             failures.append(f"{path.relative_to(root)}: 业务源码禁止使用 OSS AccessKey")
         if WILDCARD_POST_MESSAGE.search(text):
             failures.append(f"{path.relative_to(root)}: postMessage targetOrigin 禁止使用 '*' ")
-        if LEGACY_SHARED_INTEGRATION_CREDENTIAL.search(text):
+        if contract_revision == "2.5" and LEGACY_SHARED_INTEGRATION_CREDENTIAL.search(text):
             failures.append(
                 f"{path.relative_to(root)}: v2.5 禁止用一个旧接入密钥承担多种用途"
             )
 
     if not context_found:
         failures.append("未找到 zhuojian:context 页面上下文 Bridge")
-    if not bridge_ready_found:
-        failures.append("未找到绑定本次 SSO 启动的 zhuojian:ready Bridge 就绪消息")
-    if not bridge_launch_binding_found:
-        failures.append("zhuojian:context 未携带本次启动的 launch_nonce")
-    if not bridge_refresh_found:
-        failures.append("未找到 zhuojian:refresh 当前模块静默刷新处理")
-    if not bridge_refresh_result_found:
-        failures.append("未找到 zhuojian:refresh-result 静默刷新结果")
-    if not bridge_refresh_binding_found:
-        failures.append("静默刷新未同时校验来源、当前窗口、模块、页面、请求号和 launch_nonce")
-    if not bridge_refresh_deferred_found:
-        failures.append("静默刷新未在存在未保存编辑时返回 deferred")
-    if bridge_refresh_reloads_page:
-        failures.append("zhuojian:refresh 禁止调用 location.reload()，必须只刷新当前模块数据")
-    if not embedded_mode_found:
-        failures.append(
-            "未实现 iframe 原生嵌入模式：页面需要在嵌入时隐藏自身系统级导航"
-        )
-    if nested_iframe_found and unsafe_frame_ancestor_files:
-        failures.append(
-            "系统包含内层 iframe，但以下 frame-ancestors 未包含 'self'，"
-            "会阻断同源业务页面："
-            + ", ".join(sorted(str(path) for path in unsafe_frame_ancestor_files))
-        )
+    if contract_revision == "2.5":
+        if not bridge_ready_found:
+            failures.append("未找到绑定本次 SSO 启动的 zhuojian:ready Bridge 就绪消息")
+        if not bridge_launch_binding_found:
+            failures.append("zhuojian:context 未携带本次启动的 launch_nonce")
+        if not bridge_refresh_found:
+            failures.append("未找到 zhuojian:refresh 当前模块静默刷新处理")
+        if not bridge_refresh_result_found:
+            failures.append("未找到 zhuojian:refresh-result 静默刷新结果")
+        if not bridge_refresh_binding_found:
+            failures.append("静默刷新未同时校验来源、当前窗口、模块、页面、请求号和 launch_nonce")
+        if not bridge_refresh_deferred_found:
+            failures.append("静默刷新未在存在未保存编辑时返回 deferred")
+        if bridge_refresh_reloads_page:
+            failures.append("zhuojian:refresh 禁止调用 location.reload()，必须只刷新当前模块数据")
+        if not embedded_mode_found:
+            failures.append(
+                "未实现 iframe 原生嵌入模式：页面需要在嵌入时隐藏自身系统级导航"
+            )
+        if nested_iframe_found and unsafe_frame_ancestor_files:
+            failures.append(
+                "系统包含内层 iframe，但以下 frame-ancestors 未包含 'self'，"
+                "会阻断同源业务页面："
+                + ", ".join(sorted(str(path) for path in unsafe_frame_ancestor_files))
+            )
     missing_scope = {
         "pageKeys", "actionKeys", "pageAccess", "roleIds", "effectiveDataScope"
     } - page_scope_tokens
     if missing_scope:
         failures.append(
-            "未实现 v2.5 SSO 页面/操作/角色/数据范围："
+            f"未实现 v{contract_revision} SSO 页面/操作/角色/数据范围："
             + ", ".join(sorted(missing_scope))
         )
-    missing_integration = REQUIRED_INTEGRATION_MARKERS - integration_markers
-    if missing_integration:
-        failures.append(
-            "未实现 v2.5 分用途凭证和一次性 SSO 换码："
-            + ", ".join(sorted(missing_integration))
-        )
+    if contract_revision == "2.5":
+        missing_integration = REQUIRED_INTEGRATION_MARKERS - integration_markers
+        if missing_integration:
+            failures.append(
+                "未实现 v2.5 分用途凭证和一次性 SSO 换码："
+                + ", ".join(sorted(missing_integration))
+            )
     if args.requires_file_storage or args.requires_object_storage:
         missing_storage = {
             "FILE_STORAGE_DRIVER",
@@ -322,7 +340,7 @@ def main() -> int:
         return 1
     print(
         "SOURCE VALIDATION PASS: platform model credentials are absent; "
-        "embedded shell, bridge origin and v2.5 SSO/page/action/resource-scoped data access are present"
+        f"contractRevision={contract_revision} source requirements are present"
     )
     return 0
 

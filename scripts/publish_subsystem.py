@@ -19,6 +19,11 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import ProxyHandler, Request, build_opener
 
+try:
+    from contract_versions import require_supported_contract_revision
+except ModuleNotFoundError:  # imported as scripts.publish_subsystem in tests
+    from scripts.contract_versions import require_supported_contract_revision
+
 try:  # Linux production dependency; Windows remains usable for --help/tests.
     import fcntl
 except ImportError:  # pragma: no cover - Windows development host
@@ -296,8 +301,7 @@ def load_app_environment(path: Path) -> dict[str, str]:
     return values
 
 
-def load_app_credentials(path: Path) -> dict[str, str]:
-    values = load_app_environment(path)
+def require_v25_credentials(values: dict[str, str]) -> dict[str, str]:
     expected = {
         "manifest_access_token": ("ZHUOJIAN_MANIFEST_ACCESS_TOKEN", "zjmf_"),
         "sso_exchange_token": ("ZHUOJIAN_SSO_EXCHANGE_TOKEN", "zjss_"),
@@ -313,6 +317,52 @@ def load_app_credentials(path: Path) -> dict[str, str]:
     if len(set(credentials.values())) != len(credentials):
         raise SystemExit("四类应用凭证不得复用")
     return credentials
+
+
+def load_app_credentials(path: Path) -> dict[str, str]:
+    """Backward-compatible helper for callers that explicitly need v2.5."""
+
+    return require_v25_credentials(load_app_environment(path))
+
+
+def select_manifest_credential(values: dict[str, str]) -> tuple[str, str]:
+    """Select the only configured manifest credential without guessing a migration."""
+
+    modern = values.get("ZHUOJIAN_MANIFEST_ACCESS_TOKEN", "").strip()
+    legacy = values.get("ZHUOJIAN_INTEGRATION_SECRET", "").strip()
+    if modern and legacy:
+        raise SystemExit(
+            "应用凭证文件同时包含 2.4 和 2.5 凭证；"
+            "请完成明确的契约迁移后再发布"
+        )
+    if modern:
+        return modern, "2.5"
+    if len(legacy) >= 32:
+        return legacy, "2.4"
+    raise SystemExit(
+        "Runtime 管理的应用凭证缺少 Manifest 访问凭证："
+        "需要 ZHUOJIAN_MANIFEST_ACCESS_TOKEN 或 ZHUOJIAN_INTEGRATION_SECRET"
+    )
+
+
+def registration_auth_payload(
+    values: dict[str, str], contract_revision: str
+) -> dict[str, object]:
+    """Build exactly one SaaS registration credential shape for the manifest revision."""
+
+    try:
+        revision = require_supported_contract_revision(contract_revision)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    _manifest_token, credential_revision = select_manifest_credential(values)
+    if credential_revision != revision:
+        raise SystemExit(
+            f"contractRevision={revision} 与 Runtime 凭证类型 {credential_revision} 不一致；"
+            "普通发布不得自动迁移契约"
+        )
+    if revision == "2.5":
+        return {"credentials": require_v25_credentials(values)}
+    return {"integration_secret": values["ZHUOJIAN_INTEGRATION_SECRET"].strip()}
 
 
 @with_runtime_lock
@@ -373,7 +423,8 @@ def main() -> int:
     if not inferred_slug or "." in inferred_slug:
         raise SystemExit("无法从模块域名确定 applicationSlug")
     app_env_file = args.app_env_file or Path("/etc/zhuojian/apps") / f"{inferred_slug}.env"
-    credentials = load_app_credentials(app_env_file)
+    app_environment = load_app_environment(app_env_file)
+    manifest_token, credential_revision = select_manifest_credential(app_environment)
     release_file = args.runtime_release_file or (
         Path("/srv/zhuojian/deployments") / inferred_slug / "release.json"
     )
@@ -388,9 +439,7 @@ def main() -> int:
             raise SystemExit("Git HEAD 与 Runtime 当前运行版本不一致；回滚后请使用 --use-running-release")
     image_ref = str(running["image"])
 
-    manifest = call_json(
-        base_url + "/api/integration/manifest", credentials["manifest_access_token"]
-    )
+    manifest = call_json(base_url + "/api/integration/manifest", manifest_token)
     application_slug = str(manifest.get("applicationSlug") or "")
     application_name = str(manifest.get("applicationName") or "")
     enterprise_key = str((manifest.get("enterprise") or {}).get("key") or "")
@@ -402,6 +451,18 @@ def main() -> int:
         profile.get("enterpriseKey")
     ):
         raise SystemExit("Manifest enterprise.key 与 Runtime 企业不一致")
+    try:
+        contract_revision = require_supported_contract_revision(
+            manifest.get("contractRevision")
+        )
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    if contract_revision != credential_revision:
+        raise SystemExit(
+            f"contractRevision={contract_revision} 与 Runtime 凭证类型 "
+            f"{credential_revision} 不一致；普通发布不得自动迁移契约"
+        )
+    registration_auth = registration_auth_payload(app_environment, contract_revision)
 
     metadata = load_object(args.release_metadata, "发布元数据") if args.release_metadata else {}
     result = call_json(
@@ -412,7 +473,7 @@ def main() -> int:
             "application_slug": application_slug,
             "application_name": application_name,
             "base_url": base_url,
-            "credentials": credentials,
+            **registration_auth,
             "source_commit": commit,
             "image_ref": image_ref,
             "release_metadata": metadata,
@@ -449,7 +510,7 @@ def main() -> int:
         latest_release,
         status=str(result.get("status") or "failed"),
         platform_release=result,
-        contract_revision=str(manifest.get("contractRevision") or "2.0"),
+        contract_revision=contract_revision,
         manifest_digest=manifest_digest,
     )
     if result.get("status") not in {"healthy", "pending_review"}:

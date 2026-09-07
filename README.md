@@ -39,17 +39,30 @@
 
 ## 怎么装
 
-两份是**独立的 skill**，各装各的：
+两份是**独立的 skill**，各装各的。公开仓库不需要 GitHub 账号；Codex 的目录是 `~/.codex/skills`：
 
 ```bash
 # 做出来那份（仓库根）
-cp -r <clone 下来的目录>              ~/.claude/skills/aifabei-subsystem-builder/
+cp -r <clone 下来的目录>              ~/.codex/skills/aifabei-subsystem-builder/
 
 # 想清楚那份（子目录）
-cp -r <clone 下来的目录>/模块需求      ~/.claude/skills/模块需求/
+cp -r <clone 下来的目录>/模块需求      ~/.codex/skills/模块需求/
 ```
 
 装「做出来」那份时，`模块需求/` 子目录可以一起带着，不影响使用 —— 它不会被当成根 skill 的内容。
+
+不想使用 Git，也可以从公开 Release 完成一次引导安装。Windows PowerShell：
+
+```powershell
+$updater = Join-Path ([IO.Path]::GetTempPath()) 'aifabei-skill-updater.py'
+Invoke-WebRequest 'https://github.com/ZhuoJian-AI/aifabei-subsystem-builder/releases/latest/download/update_skill.py' -OutFile $updater
+py $updater --install-dir "$HOME/.codex/skills/aifabei-subsystem-builder"
+Remove-Item -LiteralPath $updater
+```
+
+安装 `v1.0.0` 引导版后，每次调用根 Skill 会检查公开 GitHub Release 的同主版本稳定更新；不跟踪 `main`，不需要 GitHub 登录。断网或校验失败时保留本地版本继续工作，跨主版本只提示管理员。
+
+`skillVersion=1.x` 是 Skill 自身版本；业务系统 Manifest 的 `contractRevision=2.4/2.5` 是 SaaS 接入版本。自动更新 Skill 永远不会替现有系统升级接入契约。
 
 ---
 

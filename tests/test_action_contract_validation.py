@@ -168,6 +168,20 @@ class ActionContractValidationTests(unittest.TestCase):
             action("export", schema=self.export_input(), result_schema=self.export_result()), "action",
         )
 
+    def test_v24_maintenance_keeps_legacy_export_shape(self) -> None:
+        MODULE.validate_action_contract(
+            action(
+                "export",
+                schema={"type": "object", "properties": {}},
+                result_schema={
+                    "type": "object",
+                    "properties": {"serverPath": {"type": "string"}},
+                },
+            ),
+            "action",
+            "2.4",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

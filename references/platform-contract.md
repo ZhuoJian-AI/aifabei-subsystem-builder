@@ -1,6 +1,10 @@
-# 灼见原生模块接入协议 v2.5
+# 灼见原生模块接入协议 v2.4–2.5
 
-`version` 始终是整数 `2`；兼容增强写入字符串 `contractRevision`。本 Skill 新建和升级的原生系统固定声明 `contractRevision="2.5"`。v2.5 把 Manifest、SSO、Action 和 Event 的凭证拆开，并把 SSO 改为平台保存、模块后端单次兑换的短码；业务字段与 v2.4 保持兼容。
+`version` 始终是整数 `2`；兼容增强写入字符串 `contractRevision`。`skill-version.json` 中的 `skillVersion` 只表示 Skill 发布版本，禁止写入子系统 Manifest，也不得借 Skill 自动更新改写项目的 `contractRevision`。
+
+新系统固定声明 `contractRevision="2.5"`。维护已有系统时先读取 `subsystem.json`，只接受当前 Skill 明确支持的 `2.4` 或 `2.5` 并保持原值；未知版本立即停止。`2.4 → 2.5` 必须是用户明确要求的独立迁移，同时完成 Runtime、四类凭证、一次性 SSO 短码和完整端点验收，禁止只改版本号。维护 2.4 时使用本节标注的兼容规则；其余正文默认描述 2.5。
+
+v2.5 把 Manifest、SSO、Action 和 Event 的凭证拆开，并把 SSO 改为平台保存、模块后端单次兑换的短码；业务目录字段与 v2.4 保持兼容。v2.4 继续使用单个 `ZHUOJIAN_INTEGRATION_SECRET`：Manifest/事件拉取使用静态 Bearer，同一密钥签发短时 SSO、Action 和 Event JWT；`auth` 使用 `algorithm="HS256"`。v2.4 普通维护不强制补齐 v2.5 的四类凭证、`authorization_code` SSO、静默刷新 Bridge 或标准分页导出；若业务需要这些新保证，应走显式 2.5 迁移。
 
 ## 标识和边界
 
