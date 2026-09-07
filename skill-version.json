@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "skillName": "aifabei-subsystem-builder",
-  "skillVersion": "1.0.5",
+  "skillVersion": "1.0.6",
   "defaultContractRevision": "2.5",
   "supportedContractRevisions": [
     "2.4",

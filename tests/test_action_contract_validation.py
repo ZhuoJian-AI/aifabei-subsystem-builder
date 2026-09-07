@@ -24,6 +24,14 @@ def action(operation: str, *, schema: dict, confirmation: bool = False, result_s
 
 
 class ActionContractValidationTests(unittest.TestCase):
+    def test_endpoint_credential_revision_matches_contract_revision(self) -> None:
+        source = (ROOT / "scripts" / "validate_endpoint.py").read_text(encoding="utf-8")
+
+        self.assertNotIn('token_kind = "v2.5"', source)
+        self.assertNotIn('token_kind = "v2.4"', source)
+        self.assertEqual(source.count('token_kind = "2.5"'), 2)
+        self.assertEqual(source.count('token_kind = "2.4"'), 2)
+
     @staticmethod
     def export_input() -> dict:
         return {

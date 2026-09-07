@@ -298,20 +298,20 @@ def main() -> int:
     VALIDATION_WARNINGS.clear()
     base = args.base_url.rstrip("/") + "/"
     token = os.environ.get(args.token_env, "")
-    token_kind = "v2.5" if token else ""
+    token_kind = "2.5" if token else ""
     if not token:
         token = os.environ.get(args.legacy_token_env, "")
-        token_kind = "v2.4" if token else ""
+        token_kind = "2.4" if token else ""
     if not token:
         hostname = urlsplit(base).hostname or ""
         inferred_slug = hostname.split(".", 1)[0]
         env_file = args.app_env_file or Path("/etc/zhuojian/apps") / f"{inferred_slug}.env"
         values = load_app_environment(env_file)
         token = values.get(args.token_env, "")
-        token_kind = "v2.5" if token else ""
+        token_kind = "2.5" if token else ""
         if not token:
             token = values.get(args.legacy_token_env, "")
-            token_kind = "v2.4" if token else ""
+            token_kind = "2.4" if token else ""
     if not token:
         raise SystemExit("缺少 Manifest 接入凭证；未读取或输出任何凭证值。")
 
