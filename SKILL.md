@@ -7,6 +7,8 @@ description: "让 AI 用业务需求和服务器登录信息，在 Alphabet 企�
 
 对外名称和正式企业标识都使用 `Alphabet` / `alphabet`；Skill 名称中的 `aifabei` 只作历史兼容。
 
+每次调用本 Skill 时，同一轮先运行一次 `python <skill>/scripts/update_skill.py`。若输出 `SKILL_UPDATED`，立即重新读取新版 `SKILL.md` 和本次所需参考文件后再继续；其他结果直接使用本地版本，细节见 [Skill 稳定版更新](references/skill-updates.md)。
+
 业务负责人只需提供三样东西：想做什么、谁使用、服务器登录信息。不要让其准备阿里云、OSS、GitHub、模型供应商或平台令牌，也不要让其选择技术方案。密码只交给真实 SSH 密码提示，不写入命令、文件、Git、日志或回复。
 
 ## 自动判断
@@ -20,7 +22,7 @@ description: "让 AI 用业务需求和服务器登录信息，在 Alphabet 企�
 
 1. 按 [ECS 首次接入](references/ecs-first-access.md) 登录服务器。先试 SSH `22`，再试管理员配置的 `443`；连接超时不代表密码错误。
 2. 运行 `zhuojian-runtime doctor`。若提示服务器尚未初始化，停止部署，只告诉用户“请企业管理员先初始化这台服务器”。
-3. 检查服务器上的现有项目。能扩展就扩展；新项目使用内置模板创建。细则见 [原生聚合与扩展](references/native-aggregation.md)。
+3. 检查服务器上的现有项目。读取 `subsystem.json` 识别并保留已有 `2.4` 或 `2.5` 接入版本；未知版本停止，不能猜测或只改版本号。能扩展就扩展；新项目使用内置模板创建。细则见 [原生聚合与扩展](references/native-aggregation.md)。
 4. 完成业务页面、数据库和操作能力，并按 [平台接入协议](references/platform-contract.md) 接入。业务系统不自建聊天 AI，也不保存模型密钥。
 5. 使用 Runtime 当前提供的文件存储；不要询问用户 Bucket、令牌或服务器目录。需求涉及上传、附件、导入导出或持久文件时，读取 [文件存储与 OSS 迁移](references/object-storage.md)，校验源码时加 `--requires-file-storage`；只有 Runtime 已启用 OSS 时再加 `--requires-object-storage`。
 6. 完成测试、部署和平台登记。Runtime 自动处理域名、目录和平台接入信息，AI 不读取、不复制、不展示这些秘密。
@@ -47,7 +49,7 @@ python <skill>/scripts/e2e_acceptance.py --help
 - 系统文件统一经过模板存储层，当前可先用磁盘，以后可以按清单迁移 OSS。
 - 基于业务数据生成文件时，必须走“子系统结构化数据 → SaaS 文件执行器 → 当前员工工作空间”链路；出现可预览、可下载的工作空间文件卡片后才算完成。
 - 系统上线后的个人助手和业务 AI 功能都由灼见 SaaS 调用模型并扣额度；业务系统不得保存或调用模型供应商密钥。
-- 新系统使用契约 `2.5`。登录、权限和平台接入的技术细节由模板、Runtime 与 [平台接入协议](references/platform-contract.md) 自动落实，不转嫁给业务用户。
+- 新系统使用契约 `2.5`；已有 `2.4/2.5` 系统的普通维护保持原版本。`2.4 → 2.5` 只在用户明确要求迁移时执行。登录、权限和平台接入的技术细节由模板、Runtime 与 [平台接入协议](references/platform-contract.md) 自动落实，不转嫁给业务用户。
 
 ## 管理员模式
 

@@ -167,3 +167,49 @@ def test_real_publisher_entrypoint_takes_the_shared_runtime_lock(monkeypatch):
 
     assert operation() == 7
     assert events == ["lock", "publish", "unlock"]
+
+
+def v25_environment() -> dict[str, str]:
+    return {
+        "ZHUOJIAN_MANIFEST_ACCESS_TOKEN": "zjmf_" + "a" * 40,
+        "ZHUOJIAN_SSO_EXCHANGE_TOKEN": "zjss_" + "b" * 40,
+        "ZHUOJIAN_ACTION_SIGNING_SECRET": "zjac_" + "c" * 40,
+        "ZHUOJIAN_EVENT_SIGNING_SECRET": "zjev_" + "d" * 40,
+    }
+
+
+def test_publisher_selects_v25_registration_shape():
+    values = v25_environment()
+
+    token, revision = publish_subsystem.select_manifest_credential(values)
+    payload = publish_subsystem.registration_auth_payload(values, "2.5")
+
+    assert token == values["ZHUOJIAN_MANIFEST_ACCESS_TOKEN"]
+    assert revision == "2.5"
+    assert set(payload) == {"credentials"}
+    assert "integration_secret" not in payload
+
+
+def test_publisher_preserves_v24_registration_shape():
+    values = {"ZHUOJIAN_INTEGRATION_SECRET": "legacy-" + "x" * 40}
+
+    token, revision = publish_subsystem.select_manifest_credential(values)
+    payload = publish_subsystem.registration_auth_payload(values, "2.4")
+
+    assert token == values["ZHUOJIAN_INTEGRATION_SECRET"]
+    assert revision == "2.4"
+    assert payload == {"integration_secret": values["ZHUOJIAN_INTEGRATION_SECRET"]}
+
+
+def test_publisher_refuses_implicit_contract_migration():
+    with pytest.raises(SystemExit, match="不得自动迁移"):
+        publish_subsystem.registration_auth_payload(v25_environment(), "2.4")
+
+
+def test_publisher_rejects_ambiguous_mixed_credentials():
+    values = {
+        **v25_environment(),
+        "ZHUOJIAN_INTEGRATION_SECRET": "legacy-" + "x" * 40,
+    }
+    with pytest.raises(SystemExit, match="同时包含 2.4 和 2.5"):
+        publish_subsystem.select_manifest_credential(values)

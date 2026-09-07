@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -23,15 +24,22 @@ module_key page_key request_id event.origin event.source deferred
 if (window.parent !== window) document.documentElement.setAttribute("data-zhuojian-embedded", "true")
 window.parent.postMessage(message, "https://saas.example.com")
 """
+VALID_SOURCE_V24 = """
+pageKeys actionKeys pageAccess roleIds effectiveDataScope
+ZHUOJIAN_INTEGRATION_SECRET
+zhuojian:context
+window.parent.postMessage(message, "https://saas.example.com")
+"""
 
 
-def run_validator(project: Path) -> subprocess.CompletedProcess[str]:
+def run_validator(project: Path, *extra: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [
             sys.executable,
             str(ROOT / "scripts" / "validate_source.py"),
             "--path",
             str(project),
+            *extra,
         ],
         cwd=ROOT,
         capture_output=True,
@@ -41,10 +49,21 @@ def run_validator(project: Path) -> subprocess.CompletedProcess[str]:
     )
 
 
-def write_valid_project(tmp_path: Path) -> Path:
+def write_valid_project(tmp_path: Path, contract_revision: str = "2.5") -> Path:
     project = tmp_path / "business-system"
     project.mkdir()
-    (project / "app.py").write_text(VALID_SOURCE, encoding="utf-8")
+    (project / "app.py").write_text(
+        VALID_SOURCE if contract_revision == "2.5" else VALID_SOURCE_V24,
+        encoding="utf-8",
+    )
+    (project / "subsystem.json").write_text(
+        json.dumps({
+            "protocol": "zhuojian-subsystem",
+            "version": 2,
+            "contractRevision": contract_revision,
+        }),
+        encoding="utf-8",
+    )
     return project
 
 
@@ -244,3 +263,48 @@ ZHUOJIAN_INTEGRATION_SECRET
     result = run_validator(project)
 
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_v24_maintenance_does_not_require_v25_credentials_or_bridge(tmp_path: Path):
+    project = write_valid_project(tmp_path, "2.4")
+    before = (project / "subsystem.json").read_bytes()
+
+    result = run_validator(project)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "contractRevision=2.4" in result.stdout
+    assert (project / "subsystem.json").read_bytes() == before
+
+
+def test_unknown_contract_revision_is_rejected(tmp_path: Path):
+    project = write_valid_project(tmp_path)
+    manifest = json.loads((project / "subsystem.json").read_text(encoding="utf-8"))
+    manifest["contractRevision"] = "2.6"
+    (project / "subsystem.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    result = run_validator(project)
+
+    assert result.returncode == 1
+    assert "不支持的 contractRevision" in result.stdout
+
+
+def test_explicit_revision_cannot_override_subsystem_json(tmp_path: Path):
+    project = write_valid_project(tmp_path, "2.4")
+
+    result = run_validator(project, "--contract-revision", "2.5")
+
+    assert result.returncode == 1
+    assert "普通维护不得只改版本号" in result.stdout
+
+
+def test_missing_manifest_requires_explicit_revision(tmp_path: Path):
+    project = tmp_path / "manifestless"
+    project.mkdir()
+    (project / "app.py").write_text(VALID_SOURCE_V24, encoding="utf-8")
+
+    result = run_validator(project)
+    explicit = run_validator(project, "--contract-revision", "2.4")
+
+    assert result.returncode == 1
+    assert "无法判断现有系统的接入契约" in result.stdout
+    assert explicit.returncode == 0, explicit.stdout + explicit.stderr

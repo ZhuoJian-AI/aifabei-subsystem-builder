@@ -12,7 +12,8 @@ from urllib.error import HTTPError
 from urllib.parse import urlencode, urljoin, urlsplit
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
-from publish_subsystem import load_app_credentials
+from contract_versions import require_supported_contract_revision
+from publish_subsystem import load_app_environment
 
 
 class RejectRedirects(HTTPRedirectHandler):
@@ -194,7 +195,11 @@ def validate_export_schema(action: dict, label: str) -> None:
     ):
         raise SystemExit(f"{label}.resultSchema.properties.nextCursor 必须允许 string 或 null。")
 
-def validate_action_contract(action: dict, label: str) -> None:
+def validate_action_contract(
+    action: dict,
+    label: str,
+    contract_revision: str = "2.5",
+) -> None:
     description = require_text(action.get("description"), f"{label}.description")
     if description.lower() in {"todo", "tbd", "placeholder", "execute action"} or description in {"执行操作", "处理数据"}:
         warn(f"{label}.description 看起来像占位文案，建议改成具体业务用途。")
@@ -246,12 +251,17 @@ def validate_action_contract(action: dict, label: str) -> None:
     validate_schema(input_schema, f"{label}.inputSchema", require_object_root=True)
     result_schema = action["resultSchema"]
     validate_schema(result_schema, f"{label}.resultSchema", require_object_root=False)
-    reject_server_path_fields(result_schema, f"{label}.resultSchema")
+    if contract_revision == "2.5":
+        reject_server_path_fields(result_schema, f"{label}.resultSchema")
 
     operation = action.get("operation")
-    if operation == "export":
+    if contract_revision == "2.5" and operation == "export":
         validate_export_schema(action, label)
-    if action.get("aiEnabled") and operation in {"create", "update", "delete", "approve"}:
+    if (
+        contract_revision == "2.5"
+        and action.get("aiEnabled")
+        and operation in {"create", "update", "delete", "approve"}
+    ):
         properties = input_schema.get("properties")
         required = input_schema.get("required")
         if not isinstance(properties, dict) or not properties:
@@ -260,7 +270,12 @@ def validate_action_contract(action: dict, label: str) -> None:
             raise SystemExit(f"{label}.inputSchema.required 必须声明目标或必填业务字段。")
         if input_schema.get("additionalProperties") is not False:
             raise SystemExit(f"{label}.inputSchema.additionalProperties 必须为 false。")
-    if action.get("aiEnabled") and operation in {"delete", "approve"} and not action.get("requiresConfirmation"):
+    if (
+        contract_revision == "2.5"
+        and action.get("aiEnabled")
+        and operation in {"delete", "approve"}
+        and not action.get("requiresConfirmation")
+    ):
         raise SystemExit(f"{label} 的删除或审批操作必须 requiresConfirmation=true。")
 
 
@@ -268,19 +283,36 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="验证 Alphabet 模块系统 v2 接入协议")
     parser.add_argument("--base-url", required=True)
     parser.add_argument("--token-env", default="ZHUOJIAN_MANIFEST_ACCESS_TOKEN", help="Manifest 凭证环境变量名")
+    parser.add_argument(
+        "--legacy-token-env",
+        default="ZHUOJIAN_INTEGRATION_SECRET",
+        help="v2.4 单一接入凭证环境变量名",
+    )
     parser.add_argument("--app-env-file", type=Path, help="Runtime 管理的应用凭证文件；默认按域名推断")
     parser.add_argument("--expect-min-modules", type=int, default=1, help="至少应发现多少个子模块")
     parser.add_argument("--expect-module-key", action="append", default=[], help="必须存在的 moduleKey，可重复")
     args = parser.parse_args()
     if args.expect_min_modules < 1:
         parser.error("--expect-min-modules 必须大于等于 1")
+    VALIDATION_WARNINGS.clear()
     base = args.base_url.rstrip("/") + "/"
     token = os.environ.get(args.token_env, "")
+    token_kind = "v2.5" if token else ""
+    if not token:
+        token = os.environ.get(args.legacy_token_env, "")
+        token_kind = "v2.4" if token else ""
     if not token:
         hostname = urlsplit(base).hostname or ""
         inferred_slug = hostname.split(".", 1)[0]
         env_file = args.app_env_file or Path("/etc/zhuojian/apps") / f"{inferred_slug}.env"
-        token = load_app_credentials(env_file)["manifest_access_token"]
+        values = load_app_environment(env_file)
+        token = values.get(args.token_env, "")
+        token_kind = "v2.5" if token else ""
+        if not token:
+            token = values.get(args.legacy_token_env, "")
+            token_kind = "v2.4" if token else ""
+    if not token:
+        raise SystemExit("缺少 Manifest 接入凭证；未读取或输出任何凭证值。")
 
     health = get_json(urljoin(base, "health"), token)
     if health.get("status") != "ok":
@@ -296,8 +328,15 @@ def main() -> int:
         raise SystemExit("清单缺少字段：" + "、".join(missing))
     if manifest.get("protocol") != "zhuojian-subsystem" or manifest.get("version") != 2:
         raise SystemExit("清单必须使用 zhuojian-subsystem version 2。")
-    if manifest.get("contractRevision") != "2.5":
-        raise SystemExit("冷启动验收要求 contractRevision=2.5。")
+    try:
+        contract_revision = require_supported_contract_revision(manifest.get("contractRevision"))
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    if contract_revision != token_kind:
+        raise SystemExit(
+            f"contractRevision={contract_revision} 与当前凭证类型不一致；"
+            "不得用自动更新或单一凭证冒充另一接入版本。"
+        )
     for module in manifest.get("modules") or []:
         if not module.get("accessRoles"):
             raise SystemExit(f"子模块 {module.get('moduleKey')} 缺少 accessRoles 权限组合建议。")
@@ -305,13 +344,21 @@ def main() -> int:
     if not isinstance(enterprise, dict) or not enterprise.get("key") or not enterprise.get("name"):
         raise SystemExit("清单 enterprise 必须包含稳定 key 和 name。")
     auth = manifest.get("auth")
-    if (
+    if contract_revision == "2.5":
+        if (
+            not isinstance(auth, dict)
+            or auth.get("ssoPath") != "/api/integration/sso"
+            or auth.get("mode") != "authorization_code"
+            or "algorithm" in auth
+        ):
+            raise SystemExit("v2.5 清单 auth 必须声明固定 ssoPath 和 authorization_code，且不得声明 algorithm。")
+    elif (
         not isinstance(auth, dict)
         or auth.get("ssoPath") != "/api/integration/sso"
-        or auth.get("mode") != "authorization_code"
-        or "algorithm" in auth
+        or auth.get("algorithm") != "HS256"
+        or "mode" in auth
     ):
-        raise SystemExit("清单 auth 必须声明固定 ssoPath 和 authorization_code，且不得声明 algorithm。")
+        raise SystemExit("v2.4 清单 auth 必须声明固定 ssoPath 和 HS256，且不得声明 mode。")
 
     events_url = urljoin(manifest_url, str(manifest["eventsUrl"]))
     if not same_origin(base, events_url):
@@ -391,7 +438,7 @@ def main() -> int:
                 raise SystemExit(f"{action_label} 的 AI/确认标记必须是布尔值。")
             if not isinstance(action["inputSchema"], dict) or not isinstance(action["resultSchema"], dict):
                 raise SystemExit(f"{action_label} 的输入输出 Schema 必须是对象。")
-            validate_action_contract(action, action_label)
+            validate_action_contract(action, action_label, contract_revision)
         pages = module.get("pages")
         if not isinstance(pages, list) or not pages:
             raise SystemExit(f"{label}.pages 必须是非空列表。")
@@ -439,7 +486,7 @@ def main() -> int:
         print(f"WARNING: {message}")
     print(
         f"接入验证通过：健康状态 {health.get('status', 'ok')}，企业 {enterprise['name']}，"
-        f"系统 {manifest['applicationSlug']}，子模块 {len(modules)} 个，"
+        f"系统 {manifest['applicationSlug']}，契约 {contract_revision}，子模块 {len(modules)} 个，"
         f"参与部门 {len(department_keys)} 个，页面 {len(page_keys)} 个，操作 {len(action_keys)} 个。"
     )
     print("Token 未输出；需要执行 SSO、页面感知 Action 和事件投递时继续运行 e2e_acceptance.py。")

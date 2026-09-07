@@ -5,7 +5,7 @@
 ## 不变量
 
 - 项目真源是 `/srv/zhuojian/repositories/{companySlug}-{applicationSlug}` 的本地 Git 仓库，不配置远程地址也能工作。
-- 一个 `applicationSlug` 永远复用同一项目目录、域名、回环端口、数据目录、四类项目凭证和容器名。
+- 一个 `applicationSlug` 永远复用同一项目目录、域名、回环端口、数据目录、原有契约凭证和容器名。新系统使用 `2.5` 四类分用凭证；维护现有 `2.4` 系统时保留单个历史凭证。
 - 一个模块系统可包含多个 `moduleKey`；新增子模块不创建新域名、新项目目录或新数据库，除非确实需要独立故障/数据/发布边界。
 - 生产容器只暴露一个 `127.0.0.1:<port>` 给 Nginx；数据库、Redis 和内部 API 不映射公网端口。
 - 部署前必须有干净的本地 Git commit。镜像使用 commit SHA 标识，成功版本写入发布记录，禁止使用裸 `latest` 作为回滚依据。
@@ -29,11 +29,11 @@
    /etc/nginx/conf.d/zhuojian-<enterprise>-<applicationSlug>.conf
    ```
 
-7. Runtime 首次生成 Manifest、SSO、Action、Event 四类项目凭证和 `SESSION_SECRET`，写入 Secret 文件；普通更新复用，不由业务 AI 手工轮换。含文件能力时按环境档案注入存储配置。后续更新复用原存储模式和稳定 `storageKey`；从硬盘迁移 OSS 必须单独执行。
+7. Runtime 为新系统生成 Manifest、SSO、Action、Event 四类 `2.5` 项目凭证和 `SESSION_SECRET`；维护已有 `2.4` 系统时复用 `ZHUOJIAN_INTEGRATION_SECRET`，不得自动升级。Secret 写入受控文件，普通更新不由业务 AI 手工轮换。含文件能力时按环境档案注入存储配置。后续更新复用原存储模式和稳定 `storageKey`；从硬盘迁移 OSS 必须单独执行。
 8. 构建 `zhuojian/<enterprise>/<applicationSlug>:<commitSHA>`。已有系统在切换前由 Runtime 自动通知 SaaS 进入发布闸门；此时员工入口和 Action 临时关闭。随后启动新容器并挂载固定数据目录，先从回环地址检查 `/health`，再原子切换 Nginx；新容器不健康时恢复旧容器、取消闸门并继续旧版本。
 9. 为 `https://<applicationSlug>.<domainSuffix>` 写入 Nginx Host 路由并签发/复用 HTTPS 证书。验证证书、`frame-ancestors`、Host 隔离、`/health` 和 Manifest。
 10. 运行 `validate_endpoint.py` 和 `e2e_acceptance.py`。它们只算登记前技术预检，不得冒充真实员工 SSO 验收；任一项失败都不得登记版本。
-11. 使用 `scripts/publish_subsystem.py` 登记当前 Git commit、`baseUrl`、镜像引用和 Runtime 管理的四类项目凭证；脚本从受控 Secret 文件读取且不打印。灼见检查域名、组织、健康与 Manifest 后创建/复用应用，不自动创建授权。新系统返回 `pending_review` 属于正常结果，需管理员核对差异并启用后才对员工开放。
+11. 使用 `scripts/publish_subsystem.py` 登记当前 Git commit、`baseUrl`、镜像引用和 Runtime 管理的当前契约凭证；脚本根据 Manifest 在 `2.4` 单凭证与 `2.5` 四凭证之间选择，从受控 Secret 文件读取且不打印。灼见检查域名、组织、健康与 Manifest 后创建/复用应用，不自动创建授权。新系统返回 `pending_review` 属于正常结果，需管理员核对差异并启用后才对员工开放。
 
 ## 后续更新
 
@@ -76,7 +76,8 @@ Authorization: Bearer <ECS Runtime 登记凭证>
 
 - `application_slug`、`application_name`：从已验证的 Manifest 取得；
 - `base_url`：必须严格等于 `https://{applicationSlug}.{runtime.domainSuffix}`；
-- `credentials`：包含 Runtime 管理的 `manifest_access_token`、`sso_exchange_token`、`action_signing_secret`、`event_signing_secret`，四值有固定类型前缀且互不相同；
+- `2.5` 请求使用 `credentials`：包含 Runtime 管理的 `manifest_access_token`、`sso_exchange_token`、`action_signing_secret`、`event_signing_secret`，四值有固定类型前缀且互不相同；
+- `2.4` 兼容请求使用 `integration_secret`：值来自已有 `ZHUOJIAN_INTEGRATION_SECRET`。两种字段必须且只能出现一种；
 - `source_commit`：干净本地 Git 的完整 commit SHA；
 - 镜像引用由 Runtime 从真实运行容器核对后自动登记，业务 AI 不填写；
 - `release_metadata`：不超过 64 KiB 的非敏感部署摘要。
