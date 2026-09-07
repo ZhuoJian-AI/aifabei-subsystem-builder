@@ -53,6 +53,11 @@ def build_archive(
         )
         archive.writestr(f"{prefix}/skill-version.json", json.dumps(version_payload(version)))
         archive.writestr(f"{prefix}/scripts/update_skill.py", "# updater\n")
+        archive.writestr(f"{prefix}/scripts/server_access_memory.py", "# access memory\n")
+        archive.writestr(
+            f"{prefix}/references/server-access-memory.md",
+            "# server access memory\n",
+        )
         if include_changelog:
             release_version = changelog_version or version
             archive.writestr(
