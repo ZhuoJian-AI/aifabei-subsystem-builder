@@ -4,13 +4,24 @@
 
 ## 不变量
 
-- 项目真源是 `/srv/zhuojian/repositories/{companySlug}-{applicationSlug}` 的本地 Git 仓库，不配置远程地址也能工作。
+- 项目真源默认是 `/srv/zhuojian/repositories/{companySlug}-{applicationSlug}` 的服务器本地 Git 仓库，不配置远程地址也能工作；业务负责人电脑或 GitHub 中的副本不能自动取代它。
 - 一个 `applicationSlug` 永远复用同一项目目录、域名、回环端口、数据目录、原有契约凭证和容器名。新系统使用 `2.5` 四类分用凭证；维护现有 `2.4` 系统时保留单个历史凭证。
 - 一个模块系统可包含多个 `moduleKey`；新增子模块不创建新域名、新项目目录或新数据库，除非确实需要独立故障/数据/发布边界。
 - 生产容器只暴露一个 `127.0.0.1:<port>` 给 Nginx；数据库、Redis 和内部 API 不映射公网端口。
 - 部署前必须有干净的本地 Git commit。镜像使用 commit SHA 标识，成功版本写入发布记录，禁止使用裸 `latest` 作为回滚依据。
 - 模块 Secret 保存于 `/etc/zhuojian/apps/{applicationSlug}.env`，权限 `0600`，不进入项目目录、Git、日志或回复。
 - 需要持久文件时默认建立 `/srv/zhuojian/data/<applicationSlug>/files`，把 `FILE_STORAGE_DRIVER=local` 和 `FILE_STORAGE_ROOT=/data/files` 写入模块 Secret。模块必须通过统一存储适配层访问稳定 `storageKey`。环境明确为 OSS 模式时，部署入口才向文件网关创建或复用项目身份并注入 `FILE_STORAGE_GATEWAY_URL` 和 `FILE_STORAGE_TOKEN`；模块永远不能获得 OSS AccessKey。
+
+## 已有项目的开发基线
+
+修改或增加功能前，先只读记录服务器项目的 Git HEAD、工作树状态和最近提交，再与当前可用的业务负责人本地副本或远程 Git 比较。比较完成前不得执行拉取、重置、覆盖目录或部署。
+
+- 服务器提交领先、双方历史已经分叉，或服务器存在尚未同步的源码修改时，先从服务器拉取项目到独立工作区，并从服务器状态创建本次开发分支。本地已有的新功能只能合并到这个基线上，不能反向覆盖服务器。
+- 服务器存在未提交修改时，先逐项区分源码与运行数据。经审查的源码用明确文件清单创建提交或补丁；`.env`、Secret、数据库、上传文件、日志、缓存、依赖目录和构建产物不得进入 Git，也不得随项目同步。
+- 本地或远程提交只有在确认完整包含服务器 HEAD、且服务器没有额外源码修改时，才能作为更新后的基线。双方分叉时保留服务器行为，再合并本地新增功能；冲突不能靠覆盖目录解决。
+- 只有负责人明确指定另一份权威源码，或服务器经核实只有镜像、编译产物、生成文件而没有可验证的源码仓库时，才不采用服务器基线。例外必须在交付回复中说明。
+
+任何情况下都不得使用 `git reset --hard`、强制推送或删除服务器项目目录来完成同步。运行容器内的临时手改不是可信源码；发现这类改动时先报告差异，不能悄悄复制回项目。
 
 ## 首次发布
 
@@ -38,7 +49,8 @@
 ## 后续更新
 
 ```text
-读取现有本地 Git、subsystem.json 和 Manifest
+比较服务器 Git 与其他副本；服务器较新或有独有源码时先从服务器建立基线
+→ 读取服务器现有 Git、subsystem.json 和 Manifest
 → 保留 applicationSlug、域名、端口、数据目录和 Secret
 → 以数据库迁移兼容旧数据
 → 页面与 Action 回归测试
