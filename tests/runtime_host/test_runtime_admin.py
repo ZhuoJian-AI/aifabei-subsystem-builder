@@ -541,6 +541,10 @@ class RuntimeHostTests(unittest.TestCase):
                 provision_runtime, "LOCAL_STORAGE_ROOT", root
             ), mock.patch.object(
                 provision_runtime, "call_json", return_value=response
+            ), mock.patch.object(
+                provision_runtime.shutil,
+                "disk_usage",
+                return_value=mock.Mock(free=10 * 1024**3),
             ), contextlib.redirect_stdout(output):
                 self.assertEqual(provision_runtime.main(), 0)
 

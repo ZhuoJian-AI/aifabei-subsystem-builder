@@ -69,6 +69,15 @@ def test_schema_accepts_v25_authorization_code_shape():
     )
 
 
+@pytest.mark.parametrize(("location", "field"), [("root", "teams"), ("module", "teamId")])
+def test_schema_rejects_retired_team_authorization_metadata(location: str, field: str):
+    payload = manifest("2.5", {"ssoPath": "/api/integration/sso", "mode": "authorization_code"})
+    target = payload if location == "root" else payload["modules"][0]
+    target[field] = [] if field == "teams" else "legacy-team"
+    with pytest.raises(jsonschema.ValidationError):
+        validate(payload)
+
+
 @pytest.mark.parametrize(
     ("revision", "auth"),
     [

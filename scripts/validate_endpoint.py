@@ -328,6 +328,13 @@ def main() -> int:
         raise SystemExit("清单缺少字段：" + "、".join(missing))
     if manifest.get("protocol") != "zhuojian-subsystem" or manifest.get("version") != 2:
         raise SystemExit("清单必须使用 zhuojian-subsystem version 2。")
+    retired_team_fields = {"team", "teams", "teamId", "team_id"}
+    unexpected_team_fields = retired_team_fields.intersection(manifest)
+    if unexpected_team_fields:
+        raise SystemExit(
+            "清单不得声明已停用的 Team 授权字段："
+            + "、".join(sorted(unexpected_team_fields))
+        )
     try:
         contract_revision = require_supported_contract_revision(manifest.get("contractRevision"))
     except ValueError as exc:
@@ -393,6 +400,12 @@ def main() -> int:
         label = f"modules[{index}]"
         if not isinstance(module, dict) or not all(module.get(key) for key in ("moduleKey", "name", "route")):
             raise SystemExit(f"{label} 必须包含 moduleKey/name/route。")
+        unexpected_team_fields = retired_team_fields.intersection(module)
+        if unexpected_team_fields:
+            raise SystemExit(
+                f"{label} 不得声明已停用的 Team 授权字段："
+                + "、".join(sorted(unexpected_team_fields))
+            )
         route = str(module["route"])
         parsed_route = urlsplit(route)
         if not route.startswith("/") or route.startswith("//") or parsed_route.scheme or parsed_route.netloc:
