@@ -69,6 +69,42 @@
       "required": ["type"],
       "properties": {"type": {"const": "object"}}
     },
+    "aiSemantics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["purpose", "primaryEntities", "fieldSemantics", "supportedIntents", "relatedPages", "businessTerms", "defaultQueryActionKey"],
+      "properties": {
+        "purpose": {"type": "string", "minLength": 1, "maxLength": 2000},
+        "primaryEntities": {"type": "array", "minItems": 1, "maxItems": 20, "uniqueItems": true, "items": {"$ref": "#/$defs/stableKey"}},
+        "fieldSemantics": {
+          "type": "array", "maxItems": 100,
+          "items": {
+            "type": "object", "additionalProperties": false, "required": ["field", "meaning"],
+            "properties": {"field": {"type": "string", "minLength": 1, "maxLength": 120}, "meaning": {"type": "string", "minLength": 1, "maxLength": 500}}
+          }
+        },
+        "supportedIntents": {"type": "array", "minItems": 1, "maxItems": 30, "uniqueItems": true, "items": {"type": "string", "minLength": 1, "maxLength": 160}},
+        "relatedPages": {
+          "type": "array", "maxItems": 30,
+          "items": {
+            "type": "object", "additionalProperties": false, "required": ["moduleKey", "pageKey", "relationship"],
+            "properties": {
+              "moduleKey": {"$ref": "#/$defs/stableKey"},
+              "pageKey": {"$ref": "#/$defs/stableKey"},
+              "relationship": {"type": "string", "minLength": 1, "maxLength": 500}
+            }
+          }
+        },
+        "businessTerms": {
+          "type": "array", "maxItems": 100,
+          "items": {
+            "type": "object", "additionalProperties": false, "required": ["term", "meaning"],
+            "properties": {"term": {"type": "string", "minLength": 1, "maxLength": 120}, "meaning": {"type": "string", "minLength": 1, "maxLength": 500}}
+          }
+        },
+        "defaultQueryActionKey": {"$ref": "#/$defs/stableKey"}
+      }
+    },
     "department": {
       "type": "object", "additionalProperties": true, "required": ["key", "name", "role"],
       "properties": {
@@ -97,7 +133,8 @@
         "pageKey": {"$ref": "#/$defs/stableKey"}, "name": {"type": "string", "minLength": 1},
         "routePattern": {"$ref": "#/$defs/sitePath"}, "queryActionKey": {"$ref": "#/$defs/stableKey"},
         "actionKeys": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/stableKey"}},
-        "contextSchema": {"$ref": "#/$defs/schema"}
+        "contextSchema": {"$ref": "#/$defs/schema"},
+        "aiSemantics": {"$ref": "#/$defs/aiSemantics"}
       }
     },
     "action": {

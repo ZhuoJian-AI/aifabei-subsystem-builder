@@ -90,20 +90,21 @@ def main() -> int:
             "approve": "审批", "export": "导出",
     }
     input_schemas = {
-        "query": {"type": "object", "properties": {
+        "query": {"type": "object", "additionalProperties": False, "properties": {
             "filters": {"type": "object", "description": f"用于筛选{args.module_name}记录的业务条件"},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 500, "description": "单次查询最多返回的记录数"},
         }},
-        "create": {"type": "object", "required": ["data"], "properties": {
+        "create": {"type": "object", "additionalProperties": False, "required": ["data"], "properties": {
             "data": {"type": "object", "description": f"创建{args.module_name}记录所需的业务字段"},
         }},
-        "update": {"type": "object", "required": ["id", "changes"], "properties": {
+        "update": {"type": "object", "additionalProperties": False, "required": ["id", "changes"], "properties": {
             "id": {"type": "string", "description": f"需要修改的{args.module_name}记录标识"},
             "changes": {"type": "object", "description": "本次需要修改的业务字段和值"},
         }},
-        "delete": {"type": "object", "required": ["id"], "properties": {
+        "delete": {"type": "object", "additionalProperties": False, "required": ["id"], "properties": {
             "id": {"type": "string", "description": f"需要删除的{args.module_name}记录标识"},
         }},
-        "approve": {"type": "object", "required": ["id"], "properties": {
+        "approve": {"type": "object", "additionalProperties": False, "required": ["id"], "properties": {
             "id": {"type": "string", "description": f"需要审批的{args.module_name}记录标识"},
             "comment": {"type": "string", "description": "审批意见，没有意见时可以省略"},
         }},
@@ -123,24 +124,24 @@ def main() -> int:
         "export": {"filters": {"status": "待处理"}, "limit": 200},
     }
     result_schemas = {
-        "query": {"type": "object", "description": f"查询{args.module_name}后的结构化业务结果", "required": ["items"], "properties": {
+        "query": {"type": "object", "additionalProperties": False, "description": f"查询{args.module_name}后的结构化业务结果", "required": ["items"], "properties": {
             "items": {"type": "array", "description": f"当前用户权限范围内的{args.module_name}记录列表"},
         }},
-        "create": {"type": "object", "description": f"新增{args.module_name}后的结构化业务结果", "required": ["id", "version"], "properties": {
+        "create": {"type": "object", "additionalProperties": False, "description": f"新增{args.module_name}后的结构化业务结果", "required": ["id", "version"], "properties": {
             "id": {"type": "string", "description": "新建记录的稳定标识"},
             "version": {"type": "integer", "description": "新建记录的当前版本号"},
             "status": {"type": "string", "description": "新建记录的当前业务状态"},
         }},
-        "update": {"type": "object", "description": f"修改{args.module_name}后的结构化业务结果", "required": ["id", "version"], "properties": {
+        "update": {"type": "object", "additionalProperties": False, "description": f"修改{args.module_name}后的结构化业务结果", "required": ["id", "version"], "properties": {
             "id": {"type": "string", "description": "已修改记录的稳定标识"},
             "version": {"type": "integer", "description": "修改后的记录版本号"},
             "status": {"type": "string", "description": "修改后的业务状态"},
         }},
-        "delete": {"type": "object", "description": f"删除{args.module_name}后的结构化业务结果", "required": ["id", "deleted"], "properties": {
+        "delete": {"type": "object", "additionalProperties": False, "description": f"删除{args.module_name}后的结构化业务结果", "required": ["id", "deleted"], "properties": {
             "id": {"type": "string", "description": "已删除记录的稳定标识"},
             "deleted": {"type": "boolean", "description": "是否已完成删除"},
         }},
-        "approve": {"type": "object", "description": f"审批{args.module_name}后的结构化业务结果", "required": ["id", "version", "status"], "properties": {
+        "approve": {"type": "object", "additionalProperties": False, "description": f"审批{args.module_name}后的结构化业务结果", "required": ["id", "version", "status"], "properties": {
             "id": {"type": "string", "description": "已审批记录的稳定标识"},
             "version": {"type": "integer", "description": "审批后的记录版本号"},
             "status": {"type": "string", "description": "审批后的业务状态"},
@@ -236,6 +237,19 @@ def main() -> int:
                     "filters": {"type": "object"}, "selection": {"type": "object"},
                     "entity_id": {"type": ["string", "null"]}, "data_version": {"type": ["integer", "string", "null"]},
                 }},
+                "aiSemantics": {
+                    "purpose": f"查看、筛选并处理{args.module_name}业务记录。",
+                    "primaryEntities": [module_key],
+                    "fieldSemantics": [],
+                    "supportedIntents": [
+                        f"说明{args.module_name}页面用途",
+                        f"查询符合条件的{args.module_name}记录",
+                        f"生成{args.module_name}业务数据文件",
+                    ],
+                    "relatedPages": [],
+                    "businessTerms": [],
+                    "defaultQueryActionKey": f"{module_key}.query",
+                },
             }],
             "actions": action_rows,
             "events": {"publishes": [], "subscribes": []},

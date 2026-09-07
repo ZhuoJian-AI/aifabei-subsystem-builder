@@ -61,6 +61,44 @@ def write_valid_project(tmp_path: Path, contract_revision: str = "2.5") -> Path:
             "protocol": "zhuojian-subsystem",
             "version": 2,
             "contractRevision": contract_revision,
+            "modules": [{
+                "moduleKey": "orders",
+                "pages": [{
+                    "pageKey": "orders.list",
+                    "queryActionKey": "orders.query",
+                    "actionKeys": ["orders.query"],
+                    **({
+                        "aiSemantics": {
+                            "purpose": "查询订单",
+                            "primaryEntities": ["order"],
+                            "fieldSemantics": [],
+                            "supportedIntents": ["查询订单"],
+                            "relatedPages": [],
+                            "businessTerms": [],
+                            "defaultQueryActionKey": "orders.query",
+                        },
+                    } if contract_revision == "2.5" else {}),
+                }],
+                "actions": [{
+                    "actionKey": "orders.query",
+                    "name": "查询订单",
+                    "operation": "query",
+                    "aiEnabled": True,
+                    "description": "按当前角色的数据范围查询订单列表。",
+                    "inputSchema": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "properties": {
+                            "limit": {"type": "integer", "maximum": 500},
+                        },
+                    },
+                    "resultSchema": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "properties": {"items": {"type": "array"}},
+                    },
+                }],
+            }],
         }),
         encoding="utf-8",
     )
@@ -274,6 +312,53 @@ def test_v24_maintenance_does_not_require_v25_credentials_or_bridge(tmp_path: Pa
     assert result.returncode == 0, result.stdout + result.stderr
     assert "contractRevision=2.4" in result.stdout
     assert (project / "subsystem.json").read_bytes() == before
+
+
+def test_v25_requires_page_semantics(tmp_path: Path):
+    project = write_valid_project(tmp_path)
+    manifest = json.loads((project / "subsystem.json").read_text(encoding="utf-8"))
+    del manifest["modules"][0]["pages"][0]["aiSemantics"]
+    (project / "subsystem.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    result = run_validator(project)
+
+    assert result.returncode == 1
+    assert "缺少 aiSemantics" in result.stdout
+
+
+def test_v25_rejects_unknown_related_page_and_unbounded_query(tmp_path: Path):
+    project = write_valid_project(tmp_path)
+    manifest = json.loads((project / "subsystem.json").read_text(encoding="utf-8"))
+    page = manifest["modules"][0]["pages"][0]
+    page["aiSemantics"]["relatedPages"] = [{
+        "moduleKey": "missing",
+        "pageKey": "missing.main",
+        "relationship": "不存在的页面",
+    }]
+    del manifest["modules"][0]["actions"][0]["inputSchema"]["properties"]["limit"]["maximum"]
+    (project / "subsystem.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    result = run_validator(project)
+
+    assert result.returncode == 1
+    assert "不存在的页面" in result.stdout
+    assert "maximum 不超过 500" in result.stdout
+
+
+def test_v25_rejects_duplicate_ai_action_meaning(tmp_path: Path):
+    project = write_valid_project(tmp_path)
+    manifest = json.loads((project / "subsystem.json").read_text(encoding="utf-8"))
+    module = manifest["modules"][0]
+    duplicate = dict(module["actions"][0])
+    duplicate["actionKey"] = "sample.query_duplicate"
+    module["actions"].append(duplicate)
+    module["pages"][0]["actionKeys"].append(duplicate["actionKey"])
+    (project / "subsystem.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    result = run_validator(project)
+
+    assert result.returncode == 1
+    assert "操作语义重复" in result.stdout
 
 
 def test_unknown_contract_revision_is_rejected(tmp_path: Path):

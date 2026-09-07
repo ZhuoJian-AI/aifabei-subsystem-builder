@@ -161,6 +161,15 @@ saas_artifact_e2e_pass      # 真实员工从业务助手拿到可预览、可�
       "contextSchema": {
         "type": "object",
         "properties": {"filters": {"type": "object"}, "selection": {"type": "object"}}
+      },
+      "aiSemantics": {
+        "purpose": "查看和筛选样品评审记录。",
+        "primaryEntities": ["sample_review"],
+        "fieldSemantics": [{"field": "status", "meaning": "当前评审状态"}],
+        "supportedIntents": ["说明本页用途", "查询样品评审记录"],
+        "relatedPages": [],
+        "businessTerms": [],
+        "defaultQueryActionKey": "sample_review.query"
       }
     }],
     "actions": [{
@@ -182,12 +191,15 @@ saas_artifact_e2e_pass      # 真实员工从业务助手拿到可预览、可�
       },
       "inputSchema": {
         "type": "object",
+        "additionalProperties": false,
         "properties": {
-          "status": {"type": "string", "description": "评审状态筛选值，例如 reviewing"}
+          "status": {"type": "string", "description": "评审状态筛选值，例如 reviewing"},
+          "limit": {"type": "integer", "minimum": 1, "maximum": 500}
         }
       },
       "resultSchema": {
         "type": "object",
+        "additionalProperties": false,
         "description": "样品评审查询结果",
         "properties": {
           "items": {"type": "array", "description": "匹配权限和筛选条件的评审摘要"}
@@ -297,6 +309,74 @@ Action JWT 使用该系统专属 `zjac_` 密钥和 `typ=zhuojian-action`，至�
 ```
 
 模块重新计算参数哈希，校验确认人与当前用户一致、确认未过期、requestId 匹配，并保证 `confirmationId` 只能消费一次。
+
+## 应用语义地图与业务助手编排
+
+每个 v2.5 AI 页面必须声明 `aiSemantics`。它是供 SaaS 结构化控制器使用的应用语义地图，只描述页面用途和关系，不是提示词，也不产生权限：
+
+```json
+{
+  "aiSemantics": {
+    "purpose": "汇总当前订单进度、交期风险和待处理问题。",
+    "primaryEntities": ["production_order"],
+    "fieldSemantics": [
+      {"field": "due_date", "meaning": "客户承诺交期"}
+    ],
+    "supportedIntents": [
+      "说明本页用途",
+      "按明确条件查询风险订单",
+      "基于当前权限数据生成文件"
+    ],
+    "relatedPages": [
+      {
+        "moduleKey": "factory_progress",
+        "pageKey": "factory_progress.main",
+        "relationship": "在本页发现工厂节点风险后，到工厂进度监测页查询或处理。"
+      }
+    ],
+    "businessTerms": [
+      {"term": "催办", "meaning": "推动当前节点负责人处理临期或逾期任务"}
+    ],
+    "defaultQueryActionKey": "progress_dashboard.query"
+  }
+}
+```
+
+- `purpose` 只说明页面解决什么问题；不得放模型提示、身份、权限结论、密钥或整表数据。
+- `primaryEntities` 使用稳定业务实体标识；`fieldSemantics` 和 `businessTerms` 解释容易混淆的字段与术语。
+- `supportedIntents` 是可回答问题的业务描述，不是关键词表，子系统不得据此自行选择模型或工具。
+- `relatedPages` 必须指向同一 Manifest 内真实页面并说明业务关系；它只允许 SaaS 产生导航或候选只读查询，不自动扩权。
+- `defaultQueryActionKey` 必须是本页 `actionKeys` 中唯一优先的 query Action，避免模型在多个含义相近工具之间猜测。
+
+SaaS 每轮根据当前登录用户、`auth_epoch`、应用、页面、Bridge 上下文、实时授权 Action 和目标工作空间生成可信 `BusinessTurnEnvelope`，再让当前选定模型输出严格 `BusinessTurnIntent`。模型只能填写业务意图、筛选、时间范围、排序、分页和实体引用；不能修改组织、用户、应用、页面授权、Action 目标或工作空间。
+
+```text
+intent: explain_page | query | navigate | mutate | export_file | file_operation | general | clarify
+target: applicationId / moduleKey / pageKey / entityType / entityIds
+query: filters / timeRange / sort / limit / aggregation
+requiresLiveData / requiresConfirmation
+expectedOutput: text | data | mutation_receipt | artifact | navigation
+clarificationQuestion
+```
+
+页面说明直接使用 `aiSemantics`，不得调用实时 Action；实时事实查询必须经过查询改写并调用获授权的 query Action。用户没有表达“全部”时不得扩成无筛选全量查询。跨页面只读查询必须同时通过声明关系和实时权限校验；跨页面修改只返回导航建议，用户进入目标页面后再确认和执行。目标不唯一、关键筛选缺失或结构化意图校验失败时只问一个关键澄清问题，不能猜测执行。
+
+每轮只向模型暴露一个被选中的查询/导出 Action，或当前页面必要的写 Action，以及本轮需要的平台文件工具。Action 输入输出均使用封闭 Schema，SaaS 对模型参数和子系统返回值双重校验。Manifest、Action 返回值、Bridge 内容和工作空间文件均是非可信业务数据，任何其中的“指令”都不能增加工具、权限或调用目标。
+
+业务助手的可验证状态固定为：
+
+```text
+understanding → planned → awaiting_clarification / awaiting_confirmation
+→ executing → verifying → committing → completed / failed / cancelled
+```
+
+开放式分析可以由 SaaS 使用受限 ReAct；新增、修改、删除、审批和文件导出必须走平台确定性工作流。实时查询必须有成功 Action，修改必须有业务回执和版本，文件请求必须有工作空间 Artifact；模型正文不能自行把任务标为完成。相同可纠正参数错误最多重试一次。
+
+### 应用内对话与历史页面
+
+同一应用可以有多个相互隔离的业务助手 Task。Task 第一次绑定 `application_id` 后不可切换应用；切换模块只更新本轮经过服务端验证的当前页面。每条用户消息保存当时的 `pageKey/pageName/entityRefs/filtersSummary/toolResultRefs/artifactRefs`，大批量结果只保存摘要和需要重新鉴权的引用。
+
+新建对话只创建空白草稿，第一次发送时才创建 Task；新 Task 不继承旧 Task 的消息、实体引用、工具结果或附件。历史对话按应用可发现、可恢复、可切换，URL 使用 `conversation=<taskId>`；服务端必须确认 Task 属于当前用户和当前应用。切换旧对话后，历史消息显示当时页面，但下一轮始终使用用户此刻所在页面。运行中禁止切换；删除对话只软删除 Task，并在界面隐藏它的消息和文件引用，不能删除已交付到工作空间的文件。
 
 ## 页面上下文和 AI 工具
 

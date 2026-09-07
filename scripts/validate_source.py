@@ -4,10 +4,12 @@
 from __future__ import annotations
 
 import argparse
+import json
 import re
 from pathlib import Path
 
 from contract_versions import detect_project_contract_revision
+from manifest_semantics import validate_manifest_semantics
 
 TEXT_SUFFIXES = {
     ".html", ".js", ".jsx", ".ts", ".tsx", ".vue", ".svelte", ".py",
@@ -181,6 +183,21 @@ def main() -> int:
         print(f"- {exc}")
         return 1
 
+    manifest_path = root / "subsystem.json"
+    if manifest_path.is_file():
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            print("SOURCE VALIDATION FAILED")
+            print(f"- subsystem.json 无法读取：{exc}")
+            return 1
+        semantic_failures = validate_manifest_semantics(
+            manifest,
+            require_semantics=contract_revision == "2.5",
+        )
+    else:
+        semantic_failures = []
+
     context_found = False
     bridge_ready_found = False
     bridge_launch_binding_found = False
@@ -196,6 +213,7 @@ def main() -> int:
     integration_markers: set[str] = set()
     storage_markers: set[str] = set()
     failures: list[str] = []
+    failures.extend(semantic_failures)
     for path in source_files(root):
         text = path.read_text(encoding="utf-8", errors="replace")
         context_found = context_found or "zhuojian:context" in text
