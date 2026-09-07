@@ -52,9 +52,16 @@ def parse_stable_semver(value: object, label: str) -> tuple[int, int, int]:
     return tuple(int(part) for part in match.groups())
 
 
-def validate_download_url(url: str, *, allow_test_url: bool) -> None:
+def validate_download_url(
+    url: str,
+    *,
+    allow_test_url: bool,
+    allow_latest_manifest: bool = False,
+) -> None:
     parsed = urlparse(url)
     if allow_test_url and parsed.scheme in {"file", "http", "https"}:
+        return
+    if allow_latest_manifest and url == LATEST_MANIFEST_URL:
         return
     if (
         parsed.scheme != "https"
@@ -70,8 +77,13 @@ def read_url(
     maximum_bytes: int,
     timeout: float,
     allow_test_url: bool,
+    allow_latest_manifest: bool = False,
 ) -> bytes:
-    validate_download_url(url, allow_test_url=allow_test_url)
+    validate_download_url(
+        url,
+        allow_test_url=allow_test_url,
+        allow_latest_manifest=allow_latest_manifest,
+    )
     request = urllib.request.Request(
         url,
         headers={"Accept": "application/octet-stream", "User-Agent": "Aifabei-Skill-Updater/1"},
@@ -263,6 +275,7 @@ def run_update(
         maximum_bytes=MAX_MANIFEST_BYTES,
         timeout=timeout,
         allow_test_url=allow_test_url,
+        allow_latest_manifest=True,
     )
     manifest = read_json_bytes(manifest_payload, "更新清单")
     available_version, archive_url, expected_digest = validate_update_manifest(

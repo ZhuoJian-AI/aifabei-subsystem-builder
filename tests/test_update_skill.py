@@ -79,6 +79,19 @@ def test_same_version_does_not_download_or_replace(tmp_path: Path) -> None:
     assert "old" in (skill_dir / "SKILL.md").read_text(encoding="utf-8")
 
 
+def test_latest_url_is_allowed_only_for_the_stable_manifest() -> None:
+    update_skill.validate_download_url(
+        update_skill.LATEST_MANIFEST_URL,
+        allow_test_url=False,
+        allow_latest_manifest=True,
+    )
+    with pytest.raises(update_skill.UpdateError, match="GitHub Release"):
+        update_skill.validate_download_url(
+            update_skill.LATEST_MANIFEST_URL,
+            allow_test_url=False,
+        )
+
+
 def test_same_major_stable_release_is_installed(tmp_path: Path) -> None:
     skill_dir = tmp_path / update_skill.SKILL_NAME
     write_skill(skill_dir, "1.0.0", "old")
