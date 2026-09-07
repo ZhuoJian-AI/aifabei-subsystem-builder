@@ -1,6 +1,6 @@
 # SSH、VPN 与代理访问
 
-本页供管理员首次初始化、修复业务 AI 登录路径，或业务 AI 在密码校验前无法连接时读取。目标是让负责人只提供服务器公网地址、root 账号和密码；VPN、代理、端口选择和 SSH 命令由 AI 处理。
+本页供管理员首次初始化、修复业务 AI 登录路径，或业务 AI 在密码校验前无法连接时读取。目标是让负责人针对新服务器只提供一次公网地址、root 账号和密码；AI 建立 [服务器长期访问记忆](server-access-memory.md) 后永久复用，VPN、代理、端口选择和 SSH 命令都由 AI 处理。
 
 ## 一眼判断
 
@@ -13,7 +13,7 @@
 
 ## 业务 AI 自动连接
 
-先遵守当前 Codex 的网络规则。用户、服务器档案或已知地域表明必须使用 VPN/代理时，第一轮就走规定路径；否则才先用直接网络探测 `22` 和已配置的 `443`：
+先运行 `server_access_memory.py resolve`。已有访问档案时直接运行 `login`，不得再次要求密码；只有新服务器没有档案时才继续下列首次连接。先遵守当前 Codex 的网络规则。用户、服务器档案或已知地域表明必须使用 VPN/代理时，第一轮就走规定路径；否则才先用直接网络探测 `22` 和已配置的 `443`：
 
 ```text
 python "<skill>/scripts/validate_ssh_access.py" --host <ECS公网地址> --ports 22,443 --json
@@ -39,7 +39,7 @@ ssh -o StrictHostKeyChecking=accept-new -o PasswordAuthentication=yes -o KbdInte
 python "<skill>/scripts/ssh_via_http_proxy.py" --proxy-url http://127.0.0.1:7897 --host <ECS公网地址> --port <selectedPort>
 ```
 
-两个登录入口都显式禁用公钥尝试并优先密码/键盘交互，避免本机 SSH 配置或大量 Agent 密钥在密码提示前耗尽认证次数。启动带 PTY 的 SSH，等真正出现密码提示后，再通过标准输入提交本次任务里用户提供的密码。Banner 探测只发送公开的 SSH 协议标识来帮助 `sslh` 立即分流，不发送账号或密码；不得把密码拼进命令参数、脚本、临时文件、环境变量、Git、日志或回复，任务结束后也不另行保存。
+上述首次登录入口显式禁用公钥尝试并优先密码/键盘交互，避免本机 SSH 配置或大量 Agent 密钥在密码提示前耗尽认证次数。启动带 PTY 的 SSH，等真正出现密码提示后，再通过标准输入提交当前对话已提供的初始密码。Banner 探测不发送账号或密码；密码不得进入命令参数、脚本、临时文件、环境变量、Git、日志或回复。登录后立即按 [服务器长期访问记忆](server-access-memory.md) 建立专用密钥，后续 `login` 固定使用该密钥并禁止回退到密码认证。
 
 本轮登录实测需要代理、但 Runtime 档案仍写 `requiresVpn=false` 时，继续复用已经成功的代理路径完成工作，并在管理员回执中标记档案需要修正；不得因档案过时而重新退回失败的直连路径。
 
@@ -54,7 +54,7 @@ python "<skill>/scripts/ssh_via_http_proxy.py" --proxy-url http://127.0.0.1:7897
 
 `provision_runtime.py` 按 Alphabet 当前前提默认写入 `requiresVpn=true`；只有管理员已经完成不依赖 VPN 的外部实测时，才传 `--no-management-access-requires-vpn`。
 
-业务负责人不需要阿里云账号、RAM、Workbench、SSH 密钥或额外令牌。若验证失败，管理员可以使用自己的云控制台修复服务器端监听或防火墙，但不能把控制台当作业务 AI 的日常连接方式。
+业务负责人不需要阿里云账号、RAM、Workbench、SSH 密钥或额外令牌。长期访问失效时由管理员恢复，不能再次向负责人索要账号密码。若验证失败，管理员可以使用自己的云控制台修复服务器端监听或防火墙，但不能把控制台当作业务 AI 的日常连接方式。
 
 ## 可选的 SSH/HTTPS `443` 复用
 

@@ -239,21 +239,29 @@ def safe_extract(archive_path: Path, destination: Path) -> Path:
 
 
 def verify_candidate(candidate: Path, expected_version: str) -> None:
+    skill_entry = candidate / "SKILL.md"
+    changelog_path = candidate / "CHANGELOG.md"
+    version_path = candidate / "skill-version.json"
+    updater_path = candidate / "scripts" / "update_skill.py"
+    access_memory_path = candidate / "scripts" / "server_access_memory.py"
+    access_reference_path = candidate / "references" / "server-access-memory.md"
     required = (
-        candidate / "SKILL.md",
-        candidate / "CHANGELOG.md",
-        candidate / "skill-version.json",
-        candidate / "scripts" / "update_skill.py",
+        skill_entry,
+        changelog_path,
+        version_path,
+        updater_path,
+        access_memory_path,
+        access_reference_path,
     )
     if not all(path.is_file() for path in required) or (candidate / ".git").exists():
         raise UpdateError("稳定版压缩包缺少必要的 Skill 文件")
-    entry_text = required[0].read_text(encoding="utf-8")
+    entry_text = skill_entry.read_text(encoding="utf-8")
     if not re.search(r"(?m)^name:\s*[\"']?aifabei-subsystem-builder[\"']?\s*$", entry_text):
         raise UpdateError("稳定版压缩包中的 Skill 名称不匹配")
-    metadata = read_json_bytes(required[2].read_bytes(), "压缩包 Skill 版本文件")
+    metadata = read_json_bytes(version_path.read_bytes(), "压缩包 Skill 版本文件")
     validate_version_metadata(metadata, expected_version=expected_version)
     try:
-        changelog = required[1].read_text(encoding="utf-8")
+        changelog = changelog_path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as exc:
         raise UpdateError("无法读取压缩包中的 CHANGELOG.md") from exc
     validate_changelog(changelog, expected_version)

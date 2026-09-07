@@ -2,7 +2,7 @@
 
 - 执行者：Codex
 - 任务：`refactor/retire-team-scope`
-- 版本：Skill `1.0.2`，契约仍为 `2.5`
+- 版本：Skill `1.0.3`，契约仍为 `2.5`
 
 ## 已完成
 
@@ -19,7 +19,7 @@
 ## 剩余发布步骤
 
 - 与执行时最新 `origin/main` 整合、合并 GitHub `main`。
-- 从干净 main 构建并核验 `1.0.2` 发布包，创建稳定 GitHub Release，再验证公开免登录安装并同步本机已安装 Skill。
+- 从干净 main 构建并核验 `1.0.3` 发布包，创建稳定 GitHub Release，再验证公开免登录安装并同步本机已安装 Skill。
 
 ## 决定
 

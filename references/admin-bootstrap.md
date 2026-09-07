@@ -4,7 +4,7 @@
 
 ## 输入与边界
 
-- 允许输入：服务器公网地址与 root 账号密码，或已登录的云控制台会话；后续平台登记再需要 Alphabet 组织 UUID、域名后缀和灼见管理员会话。收到服务器地址与 root 凭证后，AI 按 [ECS 首次接入](ecs-first-access.md) 自动登录，并按 [SSH、VPN 与代理访问](ssh-access.md) 验证业务电脑实际使用的 VPN/代理路径。标准 SSH `22` 已通过时不必改造 Nginx 或安装 `sslh`；只有 `22` 受限且确有需要时才配置 SSH/HTTPS `443` 复用。管理员可在现在或以后一次性绑定 Alphabet 企业 OSS；业务 AI 永远不需要阿里云账号、Bucket、RAM、AccessKey 或逐项目令牌。
+- 允许输入：新服务器首次提供一次公网地址与 root 账号密码，或已登录的云控制台会话；后续平台登记再需要 Alphabet 组织 UUID、域名后缀和灼见管理员会话。收到服务器地址与 root 凭证后，AI 按 [服务器长期访问记忆](server-access-memory.md) 建立可复用登录，再按 [ECS 首次接入](ecs-first-access.md) 和 [SSH、VPN 与代理访问](ssh-access.md) 验证业务电脑实际使用的 VPN/代理路径。以后不得再次向业务负责人索要账号密码。标准 SSH `22` 已通过时不必改造 Nginx 或安装 `sslh`；只有 `22` 受限且确有需要时才配置 SSH/HTTPS `443` 复用。管理员可在现在或以后一次性绑定 Alphabet 企业 OSS；业务 AI 永远不需要阿里云账号、Bucket、RAM、AccessKey 或逐项目令牌。
 - 密码、SSH 密钥、模块项目凭证和 ECS 登记凭证不得进入本地 Git、环境档案、日志或回复。
 - 默认保留服务器全部既有容器、虚拟主机、数据库和数据目录。新资源使用 `zhuojian-<enterprise>-<application>` 标识。
 - 管理员 AI 只建立运行底座、域名规则和登记入口，不替业务 AI 编写业务流程。

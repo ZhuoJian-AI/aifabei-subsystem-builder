@@ -9,7 +9,7 @@ description: "让 AI 用业务需求和服务器登录信息，在 Alphabet 企�
 
 每次调用本 Skill 时，同一轮先运行一次 `python <skill>/scripts/update_skill.py`。若输出 `SKILL_UPDATED`，先读取新版 `skill-version.json` 对应的 `CHANGELOG.md` 版本记录，再重新读取新版 `SKILL.md` 和本次所需参考文件后继续；其他结果直接使用本地版本，细节见 [Skill 稳定版更新](references/skill-updates.md)。
 
-业务负责人只需提供三样东西：想做什么、谁使用、服务器登录信息。不要让其准备阿里云、OSS、GitHub、模型供应商或平台令牌，也不要让其选择技术方案。密码只交给真实 SSH 密码提示，不写入命令、文件、Git、日志或回复。
+业务负责人只需提供三样东西：想做什么、谁使用，以及首次出现的新服务器的 `IP + root + 密码`。这次提供即代表已授权当前 Codex 环境长期登录该服务器；首次成功后建立并复用本机 SSH 访问记忆，后续禁止再次向负责人索要账号密码。不要让其准备阿里云、OSS、GitHub、模型供应商或平台令牌，也不要让其选择技术方案。
 
 ## 自动判断
 
@@ -20,7 +20,7 @@ description: "让 AI 用业务需求和服务器登录信息，在 Alphabet 企�
 
 ## 业务模式
 
-1. 按 [ECS 首次接入](references/ecs-first-access.md) 登录服务器。先试 SSH `22`，再试管理员配置的 `443`；连接超时不代表密码错误。
+1. 按 [服务器长期访问记忆](references/server-access-memory.md) 查找已有访问档案，再按 [ECS 首次接入](references/ecs-first-access.md) 登录。新服务器先试 SSH `22`，再试管理员配置的 `443`；连接超时不代表密码错误。
 2. 运行 `zhuojian-runtime doctor`。若提示服务器尚未初始化，停止部署，只告诉用户“请企业管理员先初始化这台服务器”。
 3. 检查服务器上的现有项目。读取 `subsystem.json` 识别并保留已有 `2.4` 或 `2.5` 接入版本；未知版本停止，不能猜测或只改版本号。能扩展就扩展；新项目使用内置模板创建。细则见 [原生聚合与扩展](references/native-aggregation.md)。
 4. 完成业务页面、数据库和操作能力，并按 [平台接入协议](references/platform-contract.md) 接入。业务系统不自建聊天 AI，也不保存模型密钥。
