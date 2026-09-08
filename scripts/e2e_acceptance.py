@@ -28,6 +28,50 @@ class RejectRedirects(HTTPRedirectHandler):
 
 OPENER = build_opener(ProxyHandler({}), RejectRedirects())
 
+RESPONSIVE_VIEWPORTS = (
+    "320x568", "390x844", "844x390", "768x1024",
+    "1024x768", "1280x720", "1440x900", "1920x1080",
+)
+
+
+def pending_responsive_results(manifest: dict) -> list[dict]:
+    """Describe the real-browser matrix honestly; this precheck has no employee SSO."""
+
+    results: list[dict] = []
+    for module in manifest.get("modules", []):
+        for page in module.get("pages", []):
+            page_key = page.get("pageKey", "unknown")
+            for mode in ("standalone", "embedded"):
+                for engine in ("chromium", "webkit"):
+                    for viewport in RESPONSIVE_VIEWPORTS:
+                        results.append({
+                            "pageKey": page_key,
+                            "mode": mode,
+                            "engine": engine,
+                            "viewport": viewport,
+                            "passed": None,
+                            "failures": [{
+                                "type": "pending_real_employee_browser_acceptance",
+                                "selector": None,
+                                "messageZh": "预登记技术检查没有真实员工 SSO；必须由 SaaS 浏览器验收后再判定全端通过",
+                            }],
+                        })
+            for mode in ("standalone", "embedded"):
+                for viewport in ("1280x720", "1440x900", "1920x1080"):
+                    results.append({
+                        "pageKey": page_key,
+                        "mode": mode,
+                        "engine": "firefox",
+                        "viewport": viewport,
+                        "passed": None,
+                        "failures": [{
+                            "type": "pending_real_employee_browser_acceptance",
+                            "selector": None,
+                            "messageZh": "预登记技术检查没有真实员工 SSO；桌面 Firefox 基础回归待 SaaS 执行",
+                        }],
+                    })
+    return results
+
 
 def b64(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
@@ -421,6 +465,7 @@ def main() -> int:
                 raise SystemExit("export Action 在业务 ECS 持久目录中创建或修改了文件")
             export_summary = f"standard_dataset_verified:{page_count}_pages"
 
+    responsive_results = pending_responsive_results(manifest)
     print(json.dumps({
         "status": "pre_registration_only",
         "contractRevision": contract_revision,
@@ -440,8 +485,10 @@ def main() -> int:
         "subsystem_contract_pass": True,
         "saas_format_capability_pass": "not_run",
         "saas_artifact_e2e_pass": "not_run",
+        "responsive_acceptance_pass": None,
+        "viewport_results": responsive_results,
     }, ensure_ascii=False))
-    print("技术预检未输出凭证、未执行写操作，也不代表真实员工 SSO 已通过。")
+    print("技术预检未输出凭证、未执行写操作，也不代表真实员工 SSO 或全端浏览器验收已通过。")
     return 0
 
 

@@ -59,6 +59,15 @@ def test_scaffold_defaults_to_the_canonical_alphabet_identity(tmp_path: Path):
     assert "enterprise_key:'alphabet'" in page_html
     assert "data-zhuojian-embedded" in page_html
     assert page_html.index("data-zhuojian-embedded") < page_html.index("<style>")
+    assert "100dvh" in page_html
+    assert "viewport-fit=cover" in page_html
+    assert "safe-area-inset-bottom" in page_html
+    assert 'html[data-zhuojian-embedded="true"] .bar' in page_html
+    assert 'html[data-zhuojian-embedded="true"] .module-nav' in page_html
+    assert "display:none!important" in page_html
+    assert ".table-scroll" in page_html
+    assert "@media(max-width:768px)" in page_html
+    assert "@media(prefers-reduced-motion:reduce)" in page_html
     assert "frame-ancestors 'self' " in app
 
 

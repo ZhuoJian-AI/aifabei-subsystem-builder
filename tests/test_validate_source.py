@@ -393,3 +393,68 @@ def test_missing_manifest_requires_explicit_revision(tmp_path: Path):
     assert result.returncode == 1
     assert "无法判断现有系统的接入契约" in result.stdout
     assert explicit.returncode == 0, explicit.stdout + explicit.stderr
+
+
+def test_validator_rejects_employee_html_without_device_viewport(tmp_path: Path):
+    project = write_valid_project(tmp_path)
+    (project / "index.html").write_text("<!doctype html><html><body>业务页面</body></html>", encoding="utf-8")
+
+    result = run_validator(project)
+
+    assert result.returncode == 1
+    assert "缺少 width=device-width 的 viewport" in result.stdout
+
+
+def test_validator_rejects_viewport_without_ios_safe_area_mode(tmp_path: Path):
+    project = write_valid_project(tmp_path)
+    (project / "index.html").write_text(
+        '<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1">'
+        '</head><body></body></html>',
+        encoding="utf-8",
+    )
+
+    result = run_validator(project)
+
+    assert result.returncode == 1
+    assert "缺少 viewport-fit=cover" in result.stdout
+
+
+def test_validator_accepts_viewport_attributes_in_any_order(tmp_path: Path):
+    project = write_valid_project(tmp_path)
+    (project / "index.html").write_text(
+        '<!doctype html><html><head><meta content="width=device-width,initial-scale=1,viewport-fit=cover" name="viewport">'
+        '</head><body></body></html>',
+        encoding="utf-8",
+    )
+
+    result = run_validator(project)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_validator_rejects_fixed_root_minimum_width(tmp_path: Path):
+    project = write_valid_project(tmp_path)
+    (project / "index.html").write_text(
+        '<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">'
+        '<style>html,body,#root{min-width:1024px}</style></head><body></body></html>',
+        encoding="utf-8",
+    )
+
+    result = run_validator(project)
+
+    assert result.returncode == 1
+    assert "固定 min-width=1024px" in result.stdout
+
+
+def test_validator_warns_for_table_without_local_scroll(tmp_path: Path):
+    project = write_valid_project(tmp_path)
+    (project / "index.html").write_text(
+        '<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">'
+        '</head><body><table><tr><td>业务数据</td></tr></table></body></html>',
+        encoding="utf-8",
+    )
+
+    result = run_validator(project)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "表格但未找到局部横向滚动容器" in result.stdout

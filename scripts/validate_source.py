@@ -116,6 +116,14 @@ FRAME_ANCESTOR_DIRECTIVE = re.compile(
     r"frame-ancestors(?P<sources>[^;\r\n]{0,500})",
     re.IGNORECASE,
 )
+VIEWPORT_META = re.compile(
+    r"<meta\b(?=[^>]*\bname\s*=\s*(['\"])viewport\1)(?=[^>]*\bcontent\s*=\s*(['\"])[^'\"]*width\s*=\s*device-width[^'\"]*\2)[^>]*>",
+    re.IGNORECASE,
+)
+VIEWPORT_FIT_COVER = re.compile(r"\bviewport-fit\s*=\s*cover\b", re.IGNORECASE)
+CSS_BLOCK = re.compile(r"(?P<selectors>[^{}]+)\{(?P<body>[^{}]*)\}", re.DOTALL)
+ROOT_SELECTOR = re.compile(r"(?:^|,)\s*(?:html|body|#root|#app)(?=\s|,|$)", re.IGNORECASE)
+PIXEL_WIDTH = re.compile(r"\b(?P<property>min-width|width)\s*:\s*(?P<width>\d{3,})px", re.IGNORECASE)
 
 
 def uses_model_provider_sdk(path: Path, text: str) -> bool:
@@ -213,9 +221,39 @@ def main() -> int:
     integration_markers: set[str] = set()
     storage_markers: set[str] = set()
     failures: list[str] = []
+    warnings: set[str] = set()
     failures.extend(semantic_failures)
     for path in source_files(root):
         text = path.read_text(encoding="utf-8", errors="replace")
+        relative = path.relative_to(root)
+        if path.suffix.lower() == ".html" and re.search(r"<!doctype\s+html|<html\b", text, re.IGNORECASE):
+            viewport_meta = VIEWPORT_META.search(text)
+            if not viewport_meta:
+                failures.append(f"{relative}: 员工页面缺少 width=device-width 的 viewport 声明")
+            elif not VIEWPORT_FIT_COVER.search(viewport_meta.group(0)):
+                failures.append(f"{relative}: 员工页面 viewport 缺少 viewport-fit=cover，无法可靠适配 iOS 安全区")
+            for block in CSS_BLOCK.finditer(text):
+                selectors = block.group("selectors")
+                declarations = block.group("body")
+                if ROOT_SELECTOR.search(selectors):
+                    for width_match in re.finditer(r"\bmin-width\s*:\s*(\d{3,})px", declarations, re.IGNORECASE):
+                        width = int(width_match.group(1))
+                        if width > 320:
+                            failures.append(
+                                f"{relative}: 根布局 {selectors.strip()!r} 固定 min-width={width}px，会阻断手机适配"
+                            )
+            if re.search(r"<table\b", text, re.IGNORECASE) and not re.search(
+                r"overflow-x\s*:\s*(?:auto|scroll)", text, re.IGNORECASE
+            ):
+                warnings.add(f"{relative}: 检测到表格但未找到局部横向滚动容器，请用真实浏览器验收")
+            for width_match in PIXEL_WIDTH.finditer(text):
+                width = int(width_match.group("width"))
+                if width >= 768:
+                    warnings.add(
+                        f"{relative}: 检测到可疑固定{width_match.group('property')}={width}px，请确认只用于表格或画布"
+                    )
+            if ":hover" in text and "hover:none" not in text.replace(" ", ""):
+                warnings.add(f"{relative}: 存在 hover 样式，请确认触屏有始终可见的操作入口")
         context_found = context_found or "zhuojian:context" in text
         bridge_ready_found = bridge_ready_found or "zhuojian:ready" in text
         bridge_launch_binding_found = bridge_launch_binding_found or (
@@ -356,6 +394,10 @@ def main() -> int:
         for failure in failures:
             print(f"- {failure}")
         return 1
+    if warnings:
+        print("SOURCE VALIDATION WARNINGS")
+        for warning in sorted(warnings):
+            print(f"- {warning}")
     print(
         "SOURCE VALIDATION PASS: platform model credentials are absent; "
         f"contractRevision={contract_revision} source requirements are present"
