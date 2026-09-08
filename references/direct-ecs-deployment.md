@@ -41,10 +41,10 @@
    ```
 
 7. Runtime 为新系统生成 Manifest、SSO、Action、Event 四类 `2.5` 项目凭证和 `SESSION_SECRET`；维护已有 `2.4` 系统时复用 `ZHUOJIAN_INTEGRATION_SECRET`，不得自动升级。Secret 写入受控文件，普通更新不由业务 AI 手工轮换。含文件能力时按环境档案注入存储配置。后续更新复用原存储模式和稳定 `storageKey`；从硬盘迁移 OSS 必须单独执行。
-8. 构建 `zhuojian/<enterprise>/<applicationSlug>:<commitSHA>`。已有系统在切换前由 Runtime 自动通知 SaaS 进入发布闸门；此时员工入口和 Action 临时关闭。随后启动新容器并挂载固定数据目录，先从回环地址检查 `/health`，再原子切换 Nginx；新容器不健康时恢复旧容器、取消闸门并继续旧版本。
+8. 构建 `zhuojian/<enterprise>/<applicationSlug>:<commitSHA>`。Runtime 先在 SaaS 记录候选版本，已生效的健康版本和员工入口继续可用；随后启动新容器并挂载固定数据目录，先从回环地址检查 `/health`，再原子切换 Nginx。新容器或候选校验失败时恢复旧容器并继续使用旧生效版本。
 9. 为 `https://<applicationSlug>.<domainSuffix>` 写入 Nginx Host 路由并签发/复用 HTTPS 证书。验证证书、`frame-ancestors`、Host 隔离、`/health` 和 Manifest。
 10. 运行 `validate_endpoint.py` 和 `e2e_acceptance.py`。它们只算登记前技术预检，不得冒充真实员工 SSO 验收；任一项失败都不得登记版本。
-11. 使用 `scripts/publish_subsystem.py` 登记当前 Git commit、`baseUrl`、镜像引用和 Runtime 管理的当前契约凭证；脚本根据 Manifest 在 `2.4` 单凭证与 `2.5` 四凭证之间选择，从受控 Secret 文件读取且不打印。灼见检查域名、组织、健康与 Manifest 后创建/复用应用，不自动创建授权。新系统返回 `pending_review` 属于正常结果，需管理员核对差异并启用后才对员工开放。
+11. 使用 `scripts/publish_subsystem.py` 登记当前 Git commit、`baseUrl`、镜像引用和 Runtime 管理的当前契约凭证；脚本根据 Manifest 在 `2.4` 单凭证与 `2.5` 四凭证之间选择，从受控 Secret 文件读取且不打印。灼见检查域名、组织、健康与 Manifest 后自动激活合法候选并返回 `healthy`。新应用只自动授权“系统研发者”；普通业务角色仍需企业管理员首次配置。
 
 ## 后续更新
 
@@ -61,7 +61,7 @@
 → 请求灼见同步同一个应用的 Manifest
 ```
 
-Manifest 同步负责让灼见看到新增、修改或停用的子模块、页面、Action 和事件。新增能力默认为待授权；已有 grant 不得因为 Manifest 更新而自动扩大。
+Manifest 同步负责让灼见看到新增、修改或停用的子模块、页面、Action 和事件。同步通过后候选自动成为生效版本；已有业务角色只在当前应用权限上限内继承新增资源，管理员明确拒绝的资源和停用状态保持不变。事件声明只更新目录，不创建系统间投递路由。
 
 回滚同样必须经过发布闸门并重新登记，不能只换本地容器：
 
@@ -73,7 +73,7 @@ python <skill>/scripts/publish_subsystem.py \
   --use-running-release
 ```
 
-第一条成功后状态是 `awaiting_platform_registration`，第二条把实际运行的旧 commit、Manifest 和凭证重新交给 SaaS 核对。登记成功或管理员批准前，SaaS 保持关闭；不得把本地健康误报成平台已经可用。
+第一条成功后状态是 `awaiting_platform_registration`，第二条把实际运行的旧 commit、Manifest 和凭证重新交给 SaaS 核对。只有返回 `healthy` 才算平台登记完成；不得把本地健康误报成平台已经可用。
 
 ## 发布登记接口
 
@@ -94,7 +94,7 @@ Authorization: Bearer <ECS Runtime 登记凭证>
 - 镜像引用由 Runtime 从真实运行容器核对后自动登记，业务 AI 不填写；
 - `release_metadata`：不超过 64 KiB 的非敏感部署摘要。
 
-平台根据 Runtime 凭证自动锁定 `organizationId`、`enterpriseKey` 和域名后缀，业务 AI 不能改写这些身份。返回 `healthy` 表示已同步；返回 `pending_review` 表示代码部署成功但新清单尚未获管理员批准，两者都不是自动授权。返回 `failed` 时模块继续独立运行，但灼见不把该版本当作成功版本。
+平台根据 Runtime 凭证自动锁定 `organizationId`、`enterpriseKey` 和域名后缀，业务 AI 不能改写这些身份。只有返回 `healthy` 才表示候选已验证并自动成为生效版本；返回 `failed` 时不接受候选，已有健康版本继续生效。重复提交同一 commit 必须幂等，较新的候选取代尚未完成的旧候选，迟到的旧登记不得覆盖新版本。
 
 查询当前 Runtime 自己发布的模块使用：
 
@@ -123,6 +123,6 @@ Authorization: Bearer <ECS Runtime 登记凭证>
 - `health`：容器未监听 `0.0.0.0:8000`、环境变量缺失或 `/health` 非 200，拒绝切换 Nginx。
 - `routing`：DNS、80/443、证书或 Nginx 问题，修管理员底座，不修改业务数据。
 - `contract`：Manifest、SSO、Bridge、Action 或 Event 不合格，修业务代码或 Skill。
-- `registration`：登记凭证失效、域名超范围或平台接口缺失，模块可保持本地运行，但 SaaS 入口维持关闭并标记“等待平台登记”，不自动扩大凭证。
+- `registration`：登记凭证失效、域名超范围或平台接口缺失时，首次发布的 SaaS 入口保持关闭；已有应用继续使用旧健康版本并标记候选失败。两种情况都不能自动扩大凭证。
 - `storage`：ECS、本地 Git、数据库或固定文件目录存在丢失风险时停止发布并完成同一恢复点的快照/备份；本地目录、磁盘阈值或权限未验证时不得把文件写入容器层或公开静态目录。
 - `object-storage`：环境明确选择 OSS 时，Bucket、网关或系统前缀授权未通过则停止发布或迁移；不得把 OSS 凭证交给业务 AI，也不得静默切回本地模式。

@@ -485,7 +485,7 @@ def main() -> int:
         "applicationId": result.get("application_id"),
         "contractRevision": result.get("contract_revision"),
         "sourceCommit": result.get("last_success_commit"),
-        "authorization": "unchanged; new capabilities require administrator approval",
+        "authorization": "runtime developer managed; business grants inherited within ceiling",
     }
     manifest_digest = hashlib.sha256(
         json.dumps(
@@ -513,7 +513,7 @@ def main() -> int:
         contract_revision=contract_revision,
         manifest_digest=manifest_digest,
     )
-    if result.get("status") not in {"healthy", "pending_review"}:
+    if result.get("status") != "healthy":
         summary["error"] = result.get("last_error") or "contract verification failed"
         print(json.dumps(summary, ensure_ascii=False))
         return 2
