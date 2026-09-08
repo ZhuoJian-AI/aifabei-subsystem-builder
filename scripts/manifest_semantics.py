@@ -24,6 +24,15 @@ EXPORT_RESULT_FIELDS = {
     "rowCount",
     "nextCursor",
 }
+PLATFORM_AI_CAPABILITIES = {
+    "vision.ocr": "image",
+    "vision.compare": "image",
+    "vision.classify": "image",
+    "speech.transcribe": "audio",
+    "text.extract": "text",
+    "business.predict": "json",
+}
+PLATFORM_AI_INPUT_KINDS = {"image", "audio", "text", "json"}
 
 
 def _closed_object_schema(value: object) -> bool:
@@ -158,6 +167,52 @@ def validate_manifest_semantics(manifest: object, *, require_semantics: bool) ->
                 failures.append(f"{label} defaultQueryActionKey 未指向本页 query Action")
 
         for action_key, action in actions.items():
+            platform_ai = action.get("platformAiCapability")
+            if platform_ai is not None:
+                if not require_semantics:
+                    failures.append(
+                        f"Action {action_key} 的 platformAiCapability 只能用于 v2.5"
+                    )
+                elif not isinstance(platform_ai, dict):
+                    failures.append(f"Action {action_key} platformAiCapability 必须是对象")
+                else:
+                    unknown = set(platform_ai) - {
+                        "type", "inputKinds", "humanConfirmation",
+                    }
+                    capability = platform_ai.get("type")
+                    input_kinds = platform_ai.get("inputKinds")
+                    if unknown:
+                        failures.append(
+                            f"Action {action_key} platformAiCapability 含未支持字段"
+                        )
+                    if capability not in PLATFORM_AI_CAPABILITIES:
+                        failures.append(f"Action {action_key} 声明了不支持的平台 AI 能力")
+                    if (
+                        not isinstance(input_kinds, list)
+                        or not input_kinds
+                        or len(input_kinds) > 4
+                        or any(
+                            not isinstance(kind, str)
+                            or kind not in PLATFORM_AI_INPUT_KINDS
+                            for kind in input_kinds
+                        )
+                        or len(set(input_kinds)) != len(input_kinds)
+                    ):
+                        failures.append(f"Action {action_key} 的平台 AI inputKinds 无效")
+                    elif (
+                        capability in PLATFORM_AI_CAPABILITIES
+                        and PLATFORM_AI_CAPABILITIES[capability] not in input_kinds
+                    ):
+                        failures.append(
+                            f"Action {action_key} 的 inputKinds 缺少 "
+                            f"{PLATFORM_AI_CAPABILITIES[capability]}"
+                        )
+                    if platform_ai.get("humanConfirmation") != "required":
+                        failures.append(f"Action {action_key} 的平台 AI 结果必须人工确认")
+                    if action.get("operation") != "query" or not action.get("aiEnabled"):
+                        failures.append(
+                            f"Action {action_key} 的平台 AI 能力必须是 AI 可用的 query"
+                        )
             if not action.get("aiEnabled"):
                 continue
             # v2.4 remains a maintained compatibility contract.  The closed
@@ -173,7 +228,11 @@ def validate_manifest_semantics(manifest: object, *, require_semantics: bool) ->
             if not _closed_object_schema(result_schema):
                 failures.append(f"Action {action_key} resultSchema 必须是非空封闭对象 Schema")
             operation = action.get("operation")
-            if operation in {"query", "export"} and isinstance(input_schema, dict):
+            if (
+                operation in {"query", "export"}
+                and platform_ai is None
+                and isinstance(input_schema, dict)
+            ):
                 limit = (input_schema.get("properties") or {}).get("limit")
                 if (
                     not isinstance(limit, dict)

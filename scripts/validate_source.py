@@ -203,8 +203,18 @@ def main() -> int:
             manifest,
             require_semantics=contract_revision == "2.5",
         )
+        platform_ai_actions: list[str] = []
+        modules = manifest.get("modules") if isinstance(manifest, dict) else []
+        for module in modules if isinstance(modules, list) else []:
+            actions = module.get("actions") if isinstance(module, dict) else []
+            for action in actions if isinstance(actions, list) else []:
+                if isinstance(action, dict) and isinstance(
+                    action.get("platformAiCapability"), dict
+                ):
+                    platform_ai_actions.append(str(action.get("actionKey") or ""))
     else:
         semantic_failures = []
+        platform_ai_actions = []
 
     context_found = False
     bridge_ready_found = False
@@ -214,6 +224,11 @@ def main() -> int:
     bridge_refresh_binding_found = False
     bridge_refresh_deferred_found = False
     bridge_refresh_reloads_page = False
+    bridge_ai_run_found = False
+    bridge_ai_result_found = False
+    bridge_ai_binding_found = False
+    bridge_ai_review_found = False
+    bridge_ai_normal_action_found = False
     embedded_mode_found = False
     nested_iframe_found = False
     unsafe_frame_ancestor_files: set[Path] = set()
@@ -274,6 +289,20 @@ def main() -> int:
                 region = text[max(0, match.start() - 4_000):match.end() + 8_000]
                 if re.search(r"(?:window\.)?location\.reload\s*\(", region):
                     bridge_refresh_reloads_page = True
+        if "zhuojian:ai-run" in text or "zhuojian:ai-result" in text:
+            bridge_ai_run_found = bridge_ai_run_found or "zhuojian:ai-run" in text
+            bridge_ai_result_found = bridge_ai_result_found or "zhuojian:ai-result" in text
+            bridge_ai_binding_found = bridge_ai_binding_found or all(
+                marker in text
+                for marker in (
+                    "application_slug", "launch_nonce", "module_key", "page_key",
+                    "action_key", "request_id", "event.origin", "event.source",
+                )
+            )
+            bridge_ai_review_found = bridge_ai_review_found or all(
+                marker in text for marker in ("draft", "confidence", "warnings")
+            )
+        bridge_ai_normal_action_found = bridge_ai_normal_action_found or "/api/ui/actions/" in text
         embedded_mode_found = embedded_mode_found or EMBEDDED_MODE_MARKER in text
         nested_iframe_found = nested_iframe_found or bool(NESTED_IFRAME.search(text))
         if any(
@@ -341,6 +370,26 @@ def main() -> int:
             failures.append("静默刷新未在存在未保存编辑时返回 deferred")
         if bridge_refresh_reloads_page:
             failures.append("zhuojian:refresh 禁止调用 location.reload()，必须只刷新当前模块数据")
+        if platform_ai_actions:
+            action_list = ", ".join(platform_ai_actions)
+            if not bridge_ai_run_found or not bridge_ai_result_found:
+                failures.append(
+                    f"平台专业 AI Action（{action_list}）未实现 "
+                    "zhuojian:ai-run / zhuojian:ai-result Bridge"
+                )
+            if not bridge_ai_binding_found:
+                failures.append(
+                    "专业 AI Bridge 未同时校验父窗口、Origin、应用、模块、"
+                    "页面、Action、请求号和 launch_nonce"
+                )
+            if not bridge_ai_review_found:
+                failures.append(
+                    "专业 AI 结果必须展示可校正 draft、confidence 和 warnings"
+                )
+            if not bridge_ai_normal_action_found:
+                failures.append(
+                    "人工确认专业 AI 草稿后必须通过普通 /api/ui/actions/ 写入业务"
+                )
         if not embedded_mode_found:
             failures.append(
                 "未实现 iframe 原生嵌入模式：页面需要在嵌入时隐藏自身系统级导航"
