@@ -28,7 +28,7 @@
    ```
 
 7. 在签发任何 Runtime 凭证前，先从业务实际使用的外部 Codex（允许启用 VPN/代理）验证 SSH Banner，并在真实 PTY 密码提示中完成一次 root 登录。只有已验证的连接路径才能写进 Runtime 档案；不能把云控制台登录误记为业务 AI 已可连接。
-8. 管理员在灼见为该企业签发一枚 **ECS Runtime 登记凭证**。运行 `scripts/provision_runtime.py`：脚本先检查目标目录、目标文件、所有权和权限，再对固定数据目录执行真实写入、读取、删除和磁盘余量探针；全部通过后才调用平台接口，并分别原子写入 `/etc/zhuojian/runtime-registration.key` 与不含密钥的 `/etc/zhuojian/runtime.json`。不得把凭证复制到命令参数、终端回显或回复。凭证文件权限固定为目录 `0700`、文件 `0600`。它只允许把该域名后缀下、该组织的健康模块登记/重新同步到灼见，不允许部署代码、管理服务器、授予权限或访问其他企业。
+8. 管理员在灼见为该企业签发一枚 **ECS Runtime 登记凭证**。运行 `scripts/provision_runtime.py`：脚本先检查目标目录、目标文件、所有权和权限，再对固定数据目录执行真实写入、读取、删除和磁盘余量探针；全部通过后才调用平台接口，并分别原子写入 `/etc/zhuojian/runtime-registration.key` 与不含密钥的 `/etc/zhuojian/runtime.json`。不得把凭证复制到命令参数、终端回显或回复。凭证文件权限固定为目录 `0700`、文件 `0600`。它只允许把该域名后缀下、该组织的健康模块登记/重新同步到灼见，并触发平台固定的“系统研发者”托管授权和既有角色有界继承；不允许自选角色、提升权限、部署代码、管理服务器或访问其他企业。
 9. Runtime 档案和登记凭证已经落盘后，把 `assets/admin-runtime/host/` 传到 ECS 并以 root 在该目录运行 `sh ./install.sh`，安装 `zhuojian-runtime` 受控直接部署入口。标准 SSH `22` 已验证时不得传 443 参数；只有管理员已另外安装并实测 SSH/HTTPS 复用后，才运行 `sh ./install.sh --enable-ssh-https-multiplex --public-address <ECS公网地址>`。入口只能在固定目录内创建/更新指定 `applicationSlug`，分配回环端口、建立固定文件目录、构建不可变镜像、生成 Nginx 虚拟主机、检查 HTTPS/健康和回滚本次发布；不得运行全局 Docker prune、删除未知卷或重启无关服务。
 10. 管理员选择 OSS 时，再按 [Alphabet 文件存储与 OSS 迁移](object-storage.md) 安装 `assets/admin-runtime/gateway/`，写入企业级 root-only 凭证，并运行 `zhuojian-runtime configure-oss-gateway`。只有匿名读取拒绝、`apps/*` 外的列举/读/写/删全部拒绝、真实 PUT/GET/DELETE、双应用隔离和临时身份撤销全部通过后，尚未初始化的新系统默认存储才切换成 `oss-gateway`；已有 release 不迁移。
 11. 用两个独立的最小测试应用验证域名隔离、HTTPS、`/health`、Manifest、登记链路、本地上传/下载、目录隔离、磁盘阈值和重建容器后读取。OSS 模式必须额外完成网关重启复验、新应用自动分配独立网络/前缀/身份，以及另一应用和匿名请求均无法读取。测试资源使用独立名称和数据目录，不碰已有项目。
@@ -173,7 +173,7 @@ POST  /api/v1/ecs-publisher/organizations/{organizationId}/runtimes/{runtimeId}/
 
 ## 验收与回滚
 
-- 验收：外部 Codex 通过业务实际使用的网络路径（允许 VPN/代理）在标准 `22` 或已配置的 `443` 读取 SSH Banner，并通过交互式 root 密码登录；同时 HTTPS、通配 DNS、两个 Host 不串站、Docker 健康、Nginx 配置、数据库端口不公网暴露、ECS 登记凭证只能登记本企业且不会自动授权；本地文件目录固定挂载、权限隔离、真实读写删除、磁盘阈值与一致性备份有效。OSS 模式追加检查 Bucket 私有且同地域、匿名读取被拒绝、RAM 对 `apps/*` 外的列举/读/写/删全部拒绝、网关不暴露公网端口、真实 PUT/GET/DELETE、双应用隔离、临时身份撤销、重启后复验和新应用自动 `ensure-app`。每个新 OSS 应用只和网关共享自己的 Docker 网络，不和其他应用共享存储网络。
+- 验收：外部 Codex 通过业务实际使用的网络路径（允许 VPN/代理）在标准 `22` 或已配置的 `443` 读取 SSH Banner，并通过交互式 root 密码登录；同时 HTTPS、通配 DNS、两个 Host 不串站、Docker 健康、Nginx 配置、数据库端口不公网暴露、ECS 登记凭证只能登记本企业，且除固定的“系统研发者”托管授权和既有角色有界继承外不能修改权限；本地文件目录固定挂载、权限隔离、真实读写删除、磁盘阈值与一致性备份有效。OSS 模式追加检查 Bucket 私有且同地域、匿名读取被拒绝、RAM 对 `apps/*` 外的列举/读/写/删全部拒绝、网关不暴露公网端口、真实 PUT/GET/DELETE、双应用隔离、临时身份撤销、重启后复验和新应用自动 `ensure-app`。每个新 OSS 应用只和网关共享自己的 Docker 网络，不和其他应用共享存储网络。
 - 记录新增 DNS record ID、安全组 rule ID、Nginx 文件、容器、数据目录和证书域名。
 - 回滚只删除本次新增且带精确标识的测试容器、Nginx 文件和空测试目录；不删除已有 Git 仓库、业务数据或未知卷。
 - 本地 Git 和业务数据与 ECS 同盘时必须配置 ECS 快照或企业指定的异地备份；GitHub 不作为必需备份目标。
