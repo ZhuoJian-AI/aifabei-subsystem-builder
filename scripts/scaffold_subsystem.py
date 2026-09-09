@@ -44,6 +44,16 @@ def main() -> int:
     parser.add_argument("--module-key", required=True)
     parser.add_argument("--module-name", required=True)
     parser.add_argument("--department", action="append", default=[], help="可重复：key:显示名:role")
+    parser.add_argument(
+        "--platform-ai-capability",
+        action="append",
+        default=[],
+        choices=(
+            "vision.ocr", "vision.compare", "vision.classify",
+            "speech.transcribe", "text.extract", "business.predict",
+        ),
+        help="可重复：业务确实需要时由 AI 选择平台受控专业 AI 能力",
+    )
     args = parser.parse_args()
 
     try:
@@ -194,6 +204,98 @@ def main() -> int:
             "aiTool": ai_tool,
             "inputSchema": input_schemas[operation],
             "resultSchema": result_schemas[operation],
+        })
+    specialist_specs = {
+        "vision.ocr": (
+            "图片文字识别", ["image"],
+            {
+                "text": {"type": "string", "description": "忠实识别的文字"},
+                "sections": {
+                    "type": "array", "description": "按版面分组的识别结果",
+                    "items": {"type": "string"},
+                },
+            },
+        ),
+        "vision.compare": (
+            "图片差异比较", ["image"],
+            {
+                "changes": {
+                    "type": "array", "description": "有可见证据的差异",
+                    "items": {"type": "string"},
+                },
+            },
+        ),
+        "vision.classify": (
+            "图片业务分类", ["image"],
+            {
+                "category": {"type": "string", "description": "业务分类"},
+                "reason": {"type": "string", "description": "可见证据说明"},
+            },
+        ),
+        "speech.transcribe": (
+            "业务语音转写", ["audio"],
+            {"transcript": {"type": "string", "description": "可人工校正的转写文字"}},
+        ),
+        "text.extract": (
+            "业务文字抽取", ["text"],
+            {
+                "items": {
+                    "type": "array", "description": "按业务要求抽取的内容",
+                    "items": {"type": "string"},
+                },
+            },
+        ),
+        "business.predict": (
+            "业务辅助预测", ["json"],
+            {
+                "prediction": {"type": "string", "description": "辅助判断，不是确定结论"},
+                "reasons": {
+                    "type": "array", "description": "基于输入业务事实的理由",
+                    "items": {"type": "string"},
+                },
+            },
+        ),
+    }
+    for capability in dict.fromkeys(args.platform_ai_capability):
+        name, input_kinds, properties = specialist_specs[capability]
+        action_rows.append({
+            "actionKey": f"{module_key}.{capability.replace('.', '_')}",
+            "name": name,
+            "description": (
+                f"通过灼见 SaaS 对{args.module_name}输入执行{name}，"
+                "只返回可人工校正的草稿，不直接写业务数据。"
+            ),
+            "operation": "query",
+            "aiEnabled": True,
+            "requiresConfirmation": False,
+            "aiTool": {
+                "whenToUse": f"用户明确要求{name}时使用。",
+                "whenNotToUse": "不得把 AI 草稿当成已确认业务记录。",
+                "preconditions": ["当前页面和该专业 AI Action 已获平台授权。"],
+                "sideEffects": "只生成草稿，不修改业务记录。",
+                "examples": [],
+            },
+            "inputSchema": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "recordId": {
+                        "type": "string",
+                        "description": "可选：当前要关联的业务记录标识",
+                    },
+                },
+            },
+            "resultSchema": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": properties,
+                "required": list(properties),
+            },
+            "platformAiCapability": {
+                "type": capability,
+                "inputKinds": input_kinds,
+                "humanConfirmation": "required",
+            },
         })
     page_key = f"{module_key}.list"
     department_rows = list(departments)

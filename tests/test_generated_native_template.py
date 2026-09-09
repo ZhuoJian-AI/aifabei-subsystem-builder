@@ -108,3 +108,58 @@ def test_scaffolded_native_system_runs_its_security_and_recovery_suite(tmp_path:
         ],
         cwd=ROOT,
     )
+
+
+def test_scaffold_can_add_reviewable_saas_specialist_ai(tmp_path: Path):
+    project = tmp_path / "specialist-ai"
+    run_checked(
+        [
+            sys.executable,
+            str(ROOT / "scripts" / "scaffold_subsystem.py"),
+            "--output",
+            str(project),
+            "--application-slug",
+            "specialist-probe",
+            "--application-name",
+            "Specialist probe",
+            "--module-key",
+            "inspection",
+            "--module-name",
+            "查货报告",
+            "--department",
+            "quality:品质部:owner",
+            "--platform-ai-capability",
+            "vision.ocr",
+            "--platform-ai-capability",
+            "speech.transcribe",
+        ],
+        cwd=ROOT,
+    )
+
+    manifest = json.loads((project / "subsystem.json").read_text(encoding="utf-8"))
+    actions = manifest["modules"][0]["actions"]
+    declarations = {
+        action["platformAiCapability"]["type"]: action
+        for action in actions
+        if "platformAiCapability" in action
+    }
+    assert set(declarations) == {"vision.ocr", "speech.transcribe"}
+    assert all(action["operation"] == "query" for action in declarations.values())
+    assert all(
+        action["resultSchema"]["additionalProperties"] is False
+        for action in declarations.values()
+    )
+    page_html = (project / "static" / "index.html").read_text(encoding="utf-8")
+    assert "zhuojian:ai-run" in page_html
+    assert "zhuojian:ai-result" in page_html
+    assert "请核对 AI 草稿" in page_html
+    assert "/api/ui/actions/" in page_html
+    run_checked(
+        [
+            sys.executable,
+            str(ROOT / "scripts" / "validate_source.py"),
+            "--path",
+            str(project),
+        ],
+        cwd=ROOT,
+    )

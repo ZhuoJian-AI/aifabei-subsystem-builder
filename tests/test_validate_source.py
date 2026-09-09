@@ -361,6 +361,43 @@ def test_v25_rejects_duplicate_ai_action_meaning(tmp_path: Path):
     assert "操作语义重复" in result.stdout
 
 
+def test_v25_specialist_ai_requires_bound_review_bridge(tmp_path: Path):
+    project = write_valid_project(tmp_path)
+    manifest = json.loads((project / "subsystem.json").read_text(encoding="utf-8"))
+    action = manifest["modules"][0]["actions"][0]
+    action["platformAiCapability"] = {
+        "type": "text.extract",
+        "inputKinds": ["text"],
+        "humanConfirmation": "required",
+    }
+    (project / "subsystem.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    result = run_validator(project)
+
+    assert result.returncode == 1
+    assert "zhuojian:ai-run / zhuojian:ai-result" in result.stdout
+    assert "可校正 draft" in result.stdout
+
+
+def test_v25_rejects_specialist_ai_that_writes_or_skips_confirmation(tmp_path: Path):
+    project = write_valid_project(tmp_path)
+    manifest = json.loads((project / "subsystem.json").read_text(encoding="utf-8"))
+    action = manifest["modules"][0]["actions"][0]
+    action["operation"] = "update"
+    action["platformAiCapability"] = {
+        "type": "vision.ocr",
+        "inputKinds": ["image"],
+        "humanConfirmation": "optional",
+    }
+    (project / "subsystem.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    result = run_validator(project)
+
+    assert result.returncode == 1
+    assert "必须人工确认" in result.stdout
+    assert "必须是 AI 可用的 query" in result.stdout
+
+
 def test_unknown_contract_revision_is_rejected(tmp_path: Path):
     project = write_valid_project(tmp_path)
     manifest = json.loads((project / "subsystem.json").read_text(encoding="utf-8"))

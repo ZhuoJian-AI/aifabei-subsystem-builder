@@ -34,6 +34,18 @@ RESPONSIVE_VIEWPORTS = (
 )
 
 
+def declared_specialist_capabilities(manifest: dict) -> list[str]:
+    """Return the platform specialist AI declarations verified by manifest validation."""
+
+    return sorted({
+        action["platformAiCapability"]["type"]
+        for module in manifest.get("modules", [])
+        for action in module.get("actions", [])
+        if isinstance(action.get("platformAiCapability"), dict)
+        and isinstance(action["platformAiCapability"].get("type"), str)
+    })
+
+
 def pending_responsive_results(manifest: dict) -> list[dict]:
     """Describe the real-browser matrix honestly; this precheck has no employee SSO."""
 
@@ -466,6 +478,7 @@ def main() -> int:
             export_summary = f"standard_dataset_verified:{page_count}_pages"
 
     responsive_results = pending_responsive_results(manifest)
+    specialist_capabilities = declared_specialist_capabilities(manifest)
     print(json.dumps({
         "status": "pre_registration_only",
         "contractRevision": contract_revision,
@@ -485,10 +498,18 @@ def main() -> int:
         "subsystem_contract_pass": True,
         "saas_format_capability_pass": "not_run",
         "saas_artifact_e2e_pass": "not_run",
+        "specialistAiCapabilities": specialist_capabilities,
+        "subsystem_specialist_ai_contract_pass": (
+            True if specialist_capabilities else "not_declared"
+        ),
+        "saas_specialist_ai_e2e_pass": "not_run",
         "responsive_acceptance_pass": None,
         "viewport_results": responsive_results,
     }, ensure_ascii=False))
-    print("技术预检未输出凭证、未执行写操作，也不代表真实员工 SSO 或全端浏览器验收已通过。")
+    print(
+        "技术预检未输出凭证、未执行写操作，也不代表真实员工 SSO、SaaS 专业 AI"
+        " 或全端浏览器验收已通过。"
+    )
     return 0
 
 

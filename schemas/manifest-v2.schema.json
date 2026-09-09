@@ -69,6 +69,31 @@
       "required": ["type"],
       "properties": {"type": {"const": "object"}}
     },
+    "platformAiCapability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "inputKinds", "humanConfirmation"],
+      "properties": {
+        "type": {
+          "enum": [
+            "vision.ocr",
+            "vision.compare",
+            "vision.classify",
+            "speech.transcribe",
+            "text.extract",
+            "business.predict"
+          ]
+        },
+        "inputKinds": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 4,
+          "uniqueItems": true,
+          "items": {"enum": ["image", "audio", "text", "json"]}
+        },
+        "humanConfirmation": {"const": "required"}
+      }
+    },
     "aiSemantics": {
       "type": "object",
       "additionalProperties": false,
@@ -147,7 +172,9 @@
         "operation": {"enum": ["query", "create", "update", "delete", "export", "approve"]},
         "aiEnabled": {"type": "boolean"}, "requiresConfirmation": {"type": "boolean"},
         "aiTool": {"description": "可选的 AI 工具增强说明；缺少或格式不完整不得阻断登记"},
-        "inputSchema": {"$ref": "#/$defs/inputSchema"}, "resultSchema": {"$ref": "#/$defs/schema"}
+        "inputSchema": {"$ref": "#/$defs/inputSchema"},
+        "resultSchema": {"$ref": "#/$defs/schema"},
+        "platformAiCapability": {"$ref": "#/$defs/platformAiCapability"}
       }
     },
     "events": {

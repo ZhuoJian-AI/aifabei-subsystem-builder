@@ -2090,12 +2090,29 @@ def ui_bootstrap(request: Request, moduleKey: str, pageKey: str):
     ):
         raise HTTPException(403, "Page context mismatch")
     validate_live_session(session, moduleKey, pageKey)
+    platform_ai_capabilities = []
+    for action_key in page.get("actionKeys", []):
+        action = ACTIONS.get(action_key)
+        declaration = action.get("platformAiCapability") if isinstance(action, dict) else None
+        if (
+            isinstance(declaration, dict)
+            and session_allows(session, moduleKey, pageKey, action_key)
+        ):
+            platform_ai_capabilities.append({
+                "actionKey": action_key,
+                "name": action.get("name"),
+                "type": declaration.get("type"),
+                "inputKinds": declaration.get("inputKinds", []),
+                "humanConfirmation": declaration.get("humanConfirmation"),
+            })
     return {
         "applicationName": MANIFEST["applicationName"],
         "applicationSlug": APP_SLUG,
         "moduleName": module["name"],
         "pageName": page["name"],
         "launchNonce": session.get("launchNonce"),
+        "actionKeys": list(page_access.get("actionKeys") or []),
+        "platformAiCapabilities": platform_ai_capabilities,
     }
 
 

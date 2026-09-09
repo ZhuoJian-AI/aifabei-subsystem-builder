@@ -50,7 +50,55 @@ Authorization: Bearer <short-lived-zhuojian-action-jwt>
 
 ECS 管理员只需在 Runtime 初始化时建立通配域名、HTTPS `443` 和 Nginx 受控反向代理基础。每个模块部署时自动增加自己的域名路由，将公开的网页与固定集成端点代理到该模块容器；不开放数据库端口、Docker API、容器回环端口或通用管理后端。完成 Runtime 初始化后，未来模块不需要管理员逐个新增防火墙端口或批准版本。Runtime 登记 `baseUrl` 并同步 Manifest；合法候选自动生效，新应用先只授予内置“系统研发者”，普通业务员工仍由管理员首次绑定业务角色。
 
-子系统不得为了平台 AI 重复建设聊天入口或保存平台模型 Key。如果未来确有独立的 OCR、视觉识别等模块专用模型能力，那是另一个由管理员明确批准的基础设施能力；它仍不得复用平台模型密钥，也不得绕过 Action 权限、确认和审计执行用户业务 CRUD。
+子系统不得为了平台 AI 重复建设聊天入口或保存平台模型 Key。但业务页面可以使用 OCR、语音转写、图片比较/分类、结构化抽取和业务预测等专业 AI。这些能力不由子系统直连供应商，而是通过下述 SaaS 受控链路返回可校正草稿。
+
+### 页面专业 AI 能力
+
+专业 AI 与“业务小助手”分工不同：业务小助手理解用户意图并编排获授权 Action；专业 AI 是某个页面内明确的识别或预测功能，例如“识别手写查货意见”、“转写当次批样语音”或“比较两次样衣图片的变化”。两者都使用 SaaS 的模型供应商、路由、额度、安全规则和审计。
+
+业务需要时，v2.5 Action 可选声明：
+
+```json
+{
+  "actionKey": "inspection_report.ocr",
+  "name": "识别查货报告意见",
+  "description": "识别当前员工上传的查货报告，只返回可人工校正的草稿。",
+  "operation": "query",
+  "aiEnabled": true,
+  "requiresConfirmation": false,
+  "inputSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "recordId": {"type": "string", "description": "关联的查货记录"}
+    }
+  },
+  "resultSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["opinion", "decision"],
+    "properties": {
+      "opinion": {"type": "string", "description": "识别的查货意见"},
+      "decision": {"type": "string", "description": "识别的处理结论"}
+    }
+  },
+  "platformAiCapability": {
+    "type": "vision.ocr",
+    "inputKinds": ["image"],
+    "humanConfirmation": "required"
+  }
+}
+```
+
+`platformAiCapability.type` 只允许 `vision.ocr`、`vision.compare`、`vision.classify`、`speech.transcribe`、`text.extract` 和 `business.predict`；`inputKinds` 只允许 `image/audio/text/json`。该 Action 必须是 `operation=query`、`aiEnabled=true`，并使用非空的封闭 `resultSchema`。它代表“生成草稿”，不是业务写操作，所以不能用 `create/update/approve` 伪装。
+
+子系统页面向 SaaS 父窗口发送 `zhuojian:ai-run`，只携带本次输入与 `application_slug/launch_nonce/module_key/page_key/action_key/request_id/capability`。SaaS 必须重新核对登录员工、`auth_epoch`、应用、页面、Action 和 Manifest 声明，并自行选择模型；子系统不得提交 provider、model、URL、密钥或额度参数。输入文件由 SaaS 暂存、校验和清理，不写入子系统的持久文件目录。
+
+SaaS 只向当前已验证的 iframe 回放 `zhuojian:ai-accepted`、`zhuojian:ai-progress` 和 `zhuojian:ai-result`。回放必须绑定同一父窗口、Origin、应用、模块、页面、Action、请求号和 `launch_nonce`。成功结果固定包含 `draft/confidence/warnings/requiresHumanConfirmation/provenance`；页面必须显示草稿、置信度和警告，允许用户修改，不得收到结果后自动保存。
+
+人工点击确认后，页面再通过原有的普通 `create/update/approve` Action 提交经校正数据；该 Action 继续执行数据范围、版本、确认、幂等和审计。AI 草稿未确认、页面或 Action 权限被撤销、Schema 不匹配、输入损坏或模型不可用时都必须失败关闭，不能把草稿写入业务表。
+
+专业 AI 端到端验收必须使用 SaaS 自动化测试员工执行：在获权页面上传或输入样例 → 核对返回的草稿/置信度/警告 → 修改草稿 → 点击确认 → 核对普通 Action 业务回执及数据版本。同时测试撤权、伪造页面/Action、重放请求、无人工确认直接写入和子系统源码中的供应商 SDK/密钥。只跑子系统端点检查不能声称该链路端到端通过。
 
 ### Action 如何物化为 AI 工具
 
