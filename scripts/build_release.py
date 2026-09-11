@@ -75,6 +75,7 @@ def main() -> int:
         Path("CHANGELOG.md"),
         Path("skill-version.json"),
         Path("scripts/update_skill.py"),
+        Path("scripts/update_managed_skills.py"),
         Path("scripts/server_access_memory.py"),
         Path("references/server-access-memory.md"),
     }
