@@ -64,6 +64,8 @@ Remove-Item -LiteralPath $updater
 
 安装引导版后，每次调用根 Skill 会检查公开 GitHub Release 的同主版本稳定更新；不跟踪 `main`，不需要 GitHub 登录。更新成功后，AI 会先读取新版 `CHANGELOG.md` 中与当前 `skillVersion` 对应的记录，再按新版规则继续。断网或校验失败时保留本地版本继续工作，跨主版本只提示管理员。
 
+`1.1.0` 是本仓库迁移到 `ZhuoJian-AI/zhuojian-enterprise-skills` 的兼容桥接版。已有负责人仍使用上面的原地址升级一次；安装 `1.1.0` 后，总 Skill 及其按 ECS 自动识别的企业交接 Skills 都从唯一总仓库的稳定 Release 更新。管理员以后只需向负责人提供这一份总 Skill，以及新服务器首次连接所需的 `IP + root + 密码`；负责人无需另外领取或更新交接包。
+
 `skillVersion=1.x` 是 Skill 自身版本；业务系统 Manifest 的 `contractRevision=2.4/2.5` 是 SaaS 接入版本。自动更新 Skill 永远不会替现有系统升级接入契约。
 
 维护者发布稳定版时，需要同时更新 `skill-version.json` 和 `CHANGELOG.md`，测试通过并合并到 `main` 后再发布同版本 GitHub Release。只合并 `main` 不会触发用户自动更新。

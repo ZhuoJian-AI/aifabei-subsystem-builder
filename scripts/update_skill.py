@@ -21,10 +21,10 @@ from urllib.parse import urlparse
 
 SKILL_NAME = "aifabei-subsystem-builder"
 LATEST_MANIFEST_URL = (
-    "https://github.com/ZhuoJian-AI/aifabei-subsystem-builder/"
+    "https://github.com/ZhuoJian-AI/zhuojian-enterprise-skills/"
     "releases/latest/download/update-manifest.json"
 )
-RELEASE_PATH_PREFIX = "/ZhuoJian-AI/aifabei-subsystem-builder/releases/download/"
+RELEASE_PATH_PREFIX = "/ZhuoJian-AI/zhuojian-enterprise-skills/releases/download/"
 SEMVER_RE = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
 MAX_MANIFEST_BYTES = 256 * 1024
 MAX_ARCHIVE_BYTES = 128 * 1024 * 1024
@@ -243,6 +243,7 @@ def verify_candidate(candidate: Path, expected_version: str) -> None:
     changelog_path = candidate / "CHANGELOG.md"
     version_path = candidate / "skill-version.json"
     updater_path = candidate / "scripts" / "update_skill.py"
+    managed_updater_path = candidate / "scripts" / "update_managed_skills.py"
     access_memory_path = candidate / "scripts" / "server_access_memory.py"
     access_reference_path = candidate / "references" / "server-access-memory.md"
     required = (
@@ -250,6 +251,7 @@ def verify_candidate(candidate: Path, expected_version: str) -> None:
         changelog_path,
         version_path,
         updater_path,
+        managed_updater_path,
         access_memory_path,
         access_reference_path,
     )

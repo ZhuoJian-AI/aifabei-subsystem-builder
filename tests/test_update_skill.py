@@ -53,6 +53,7 @@ def build_archive(
         )
         archive.writestr(f"{prefix}/skill-version.json", json.dumps(version_payload(version)))
         archive.writestr(f"{prefix}/scripts/update_skill.py", "# updater\n")
+        archive.writestr(f"{prefix}/scripts/update_managed_skills.py", "# managed updater\n")
         archive.writestr(f"{prefix}/scripts/server_access_memory.py", "# access memory\n")
         archive.writestr(
             f"{prefix}/references/server-access-memory.md",

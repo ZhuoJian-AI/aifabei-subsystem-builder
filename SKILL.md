@@ -7,7 +7,7 @@ description: "让 AI 用业务需求和服务器登录信息，在 Alphabet 企�
 
 对外名称和正式企业标识都使用 `Alphabet` / `alphabet`；Skill 名称中的 `aifabei` 只作历史兼容。
 
-每次调用本 Skill 时，同一轮先运行一次 `python <skill>/scripts/update_skill.py`。若输出 `SKILL_UPDATED`，先读取新版 `skill-version.json` 对应的 `CHANGELOG.md` 版本记录，再重新读取新版 `SKILL.md` 和本次所需参考文件后继续；其他结果直接使用本地版本，细节见 [Skill 稳定版更新](references/skill-updates.md)。
+每次调用本 Skill 时，同一轮先运行一次 `python <skill>/scripts/update_skill.py`，再运行一次 `python <skill>/scripts/update_managed_skills.py installed`。前者更新本 Skill，后者更新本机已经安装的企业交接 Skills。若任一命令输出 `SKILL_UPDATED` 或 `MANAGED_SKILLS_UPDATED`，先读取对应新版的版本记录，再重新读取新版 `SKILL.md` 和本次所需参考文件后继续；其他结果直接使用本地版本，细节见 [Skill 稳定版更新](references/skill-updates.md) 和 [企业交接 Skill 自动同步](references/managed-handoff-skills.md)。
 
 业务负责人只需提供三样东西：想做什么、谁使用，以及首次出现的新服务器的 `IP + root + 密码`。这次提供即代表已授权当前 Codex 环境长期登录该服务器；首次成功后建立并复用本机 SSH 访问记忆，后续禁止再次向负责人索要账号密码。不要让其准备阿里云、OSS、GitHub、模型供应商或平台令牌，也不要让其选择技术方案。
 
@@ -21,7 +21,7 @@ description: "让 AI 用业务需求和服务器登录信息，在 Alphabet 企�
 ## 业务模式
 
 1. 按 [服务器长期访问记忆](references/server-access-memory.md) 查找已有访问档案，再按 [ECS 首次接入](references/ecs-first-access.md) 登录。新服务器先试 SSH `22`，再试管理员配置的 `443`；连接超时不代表密码错误。
-2. 运行 `zhuojian-runtime doctor`。若提示服务器尚未初始化，停止部署，只告诉用户“请企业管理员先初始化这台服务器”。
+2. 运行 `zhuojian-runtime doctor`。若提示服务器尚未初始化，停止部署，只告诉用户“请企业管理员先初始化这台服务器”。读取服务器非敏感 Runtime 档案中的 `enterpriseKey` 与 `runtimeId`，连同当前主机地址交给 [企业交接 Skill 自动同步](references/managed-handoff-skills.md) 的 `resolve` 流程；用户口述的公司名称只作核对，服务器档案为准。安装或更新后，必须立即读取所有匹配的交接 `SKILL.md` 再继续。
 3. 检查服务器上的现有项目。若服务器源码比本地/Git 副本更新、分叉或含未同步改动，先从服务器建立开发基线，禁止用落后副本覆盖；例外见 [ECS 直接发布](references/direct-ecs-deployment.md)。读取 `subsystem.json` 识别并保留已有 `2.4` 或 `2.5` 接入版本；未知版本停止，不能猜测或只改版本号。能扩展就扩展；新项目使用内置模板创建。细则见 [原生聚合与扩展](references/native-aggregation.md)。
 4. 完成业务页面、数据库和操作能力，并按 [平台接入协议](references/platform-contract.md) 接入。通用业务助手由 SaaS 提供；页面需要 OCR、语音转写、图片判断等专业 AI 时也由 SaaS 受控执行，子系统不保存模型密钥。
 5. 使用 Runtime 当前提供的文件存储；不要询问用户 Bucket、令牌或服务器目录。需求涉及上传、附件、导入导出或持久文件时，读取 [文件存储与 OSS 迁移](references/object-storage.md)，校验源码时加 `--requires-file-storage`；只有 Runtime 已启用 OSS 时再加 `--requires-object-storage`。
@@ -56,7 +56,7 @@ python <skill>/scripts/e2e_acceptance.py --help
 
 ## 管理员模式
 
-管理员只需为每台 ECS 初始化一次。按 [管理员与服务器初始化](references/admin-bootstrap.md) 完成 Runtime、Docker、域名、数据目录、监控、备份和平台登记；网络问题按 [SSH、VPN 与代理访问](references/ssh-access.md) 排查。以后业务 AI 可以自行创建和更新系统；管理员只需按人员职责绑定“系统研发者”或业务角色，必要时可停用系统或 Action。
+管理员只需为每台 ECS 初始化一次。按 [管理员与服务器初始化](references/admin-bootstrap.md) 完成 Runtime、Docker、域名、数据目录、监控、备份和平台登记；网络问题按 [SSH、VPN 与代理访问](references/ssh-access.md) 排查。若该服务器存在企业或服务器特有规则，管理员把对应交接 Skill 及其 `enterpriseKey`、`runtimeId` 或主机匹配项登记到唯一企业 Skills 总仓库；以后只向负责人提供本 Skill，以及首次连接所需的服务器 `IP + root + 密码`。业务 AI 会自动取得交接 Skill，负责人不需要 GitHub 账号或单独安装包。以后管理员只需按人员职责绑定“系统研发者”或业务角色，必要时可停用系统或 Action。
 
 OSS 不是前置条件。未配置时使用磁盘；以后由管理员按 [文件存储与 OSS 迁移](references/object-storage.md) 迁移，不在普通发布过程中暗中切换。
 
